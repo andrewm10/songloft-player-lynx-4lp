@@ -187,7 +187,9 @@ jobs:
             # 刚 push 的 tag 可能还没被 Actions API 索引，失败时短暂重试
             DISPATCHED=0
             for attempt in 1 2 3; do
-              if gh workflow run build-and-release.yml \
+              # 派发 fork 自建的「只构建安卓」workflow，不碰上游的全平台
+              # build-and-release.yml（它会连带 iOS / HarmonyOS 签名校验而失败）。
+              if gh workflow run build-android.yml \
                    --repo "$REPOSITORY" --ref "$tag" 2>/dev/null; then
                 DISPATCHED=1
                 break

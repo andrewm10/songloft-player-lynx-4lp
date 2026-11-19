@@ -1,0 +1,142 @@
+name: Build Android APK (Leapmotor)
+
+# 零跑车机全是 Android，本 fork 只需要安卓成品 APK。
+# 本工作流是从上游 build-and-release.yml 中裁出的「只构建安卓」版本：
+#   保留 prepare（JS 构建 + tag/版本校验）与 android（签名 APK + 校验）两个 job；
+#   删除 web / ios / harmony / release 全家桶。
+# 为什么不去改上游的 build-and-release.yml：
+#   1) sync 每次 merge -X theirs 上游，改上游文件会被覆盖，不持久；
+#   2) GITHUB_TOKEN 无权修改 .github/workflows/ 下的文件（GitHub 硬限制）。
+#   本文件是 fork 自建、上游没有，merge 不会碰它，sync 只负责派发它。
+#
+# 由 sync-upstream.yml 以 `gh workflow run build-android.yml --ref <tag>` 派发；
+# 也可在 Actions 页手动 Run（需先在项目 Settings 切到目标 tag 或 main）。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: leapmotor-android-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SONGLOFT_BUILD_METADATA: ${{ github.workspace }}/.build/version.json
+  SONGLOFT_TEST_BRIDGE: "false"
+
+jobs:
+  prepare:
+    name: JS validation and build metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      channel: ${{ steps.metadata.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.15.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Prepare shared metadata (validates v* tag against package.json)
+        id: metadata
+        env:
+          SONGLOFT_UPDATE_PUBLIC_KEY: ${{ vars.LYNX_UPDATE_PUBLIC_KEY }}
+        run: node scripts/prepare-build.mjs
+      - run: pnpm run typecheck
+      - run: pnpm run build
+      - run: pnpm test
+      - run: pnpm run test:release
+      - name: Share exact bundles and metadata with android
+        uses: actions/upload-artifact@v4
+        with:
+          name: js-bundles
+          path: |
+            dist/
+            .build/version.json
+            .build/native-host.json
+            .build/bundle-host.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  android:
+    name: Android APK
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: js-bundles
+      - run: node scripts/copy-bundle-android.mjs
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools platforms;android-34 build-tools;34.0.0
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Configure release signing
+        # 缺任一签名 secret 立即失败，绝不产出未签名/debug 签名的包。
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in KEYSTORE STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then echo "::error::Missing Android signing secret: $name"; exit 1; fi
+          done
+          printf '%s' "$KEYSTORE" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          echo "SONGLOFT_REQUIRE_SIGNING=true" >> "$GITHUB_ENV"
+      - name: Build APK and native tests
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon :app:assembleRelease :app:testDebugUnitTest
+      - name: Inspect APK version, payload and signature
+        run: |
+          set -euo pipefail
+          cp android/app/build/outputs/apk/release/app-release.apk songloft-lynx-android.apk
+          python3 scripts/verify-package.py android songloft-lynx-android.apk .build/version.json
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose songloft-lynx-android.apk
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-android
+          path: songloft-lynx-android.apk
+          if-no-files-found: error
+          retention-days: 30
+      # Release 是锦上添花：核心 APK 已在 artifact 里。这里容错处理，
+      # 避免 fork 的 Release 权限/已有 Release 冲突导致整条 workflow 标红。
+      - name: Publish APK to tag Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAG" ]; then echo "::error::prepare 未产出 release_tag"; exit 1; fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" songloft-lynx-android.apk --clobber
+          else
+            gh release create "$TAG" songloft-lynx-android.apk \
+              --title "$TAG (Leapmotor)" \
+              --notes "零跑方控适配版 Android APK。"
+          fi
