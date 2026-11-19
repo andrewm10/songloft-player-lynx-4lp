@@ -1,4 +1,4 @@
-name: Sync upstream & build tagged APK
+name: "Sync upstream and build tagged APK"
 
 # 北京时间早 07:00 = UTC 23:00。
 # 职责：同步上游 main 与 v* tag → re-apply 方控补丁 → 在 fork 上把 tag 指向补丁版本
