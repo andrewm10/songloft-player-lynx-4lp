@@ -126,6 +126,20 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+        <!-- BEGIN leapmotor24 steering patch (injected) -->
+        <receiver
+            android:name=".Leapmotor24SteeringReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.leapmotor.steerwheelcontrol.media" />
+                <action android:name="org.songloft.lynx.leapmotor24.CONFIGURE" />
+            </intent-filter>
+        </receiver>
+        <provider
+            android:name=".LeapmotorInitProvider"
+            android:authorities="${applicationId}.leapmotor24.init"
+            android:exported="false" />
+        <!-- END leapmotor24 steering patch -->
     </application>
 
 </manifest>
