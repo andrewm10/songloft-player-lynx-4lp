@@ -55,7 +55,13 @@ jobs:
           set -euo pipefail
           git remote remove upstream 2>/dev/null || true
           git remote add upstream "$UPSTREAM_URL"
-          git fetch upstream --tags --prune
+          # 关键：绝不能加 --tags。fork 会把构建过的 v* tag 用 `git tag -f`
+          # 重新指向补丁 commit 并 force push；上游存在同名 tag 且指向不同 commit。
+          # `git fetch --tags` 会试图用上游版本覆盖本地同名 tag，Git 2.20+ 默认
+          # 拒绝（would clobber existing tag）导致本步骤 exit 1、整个同步中断。
+          # 门禁判断依赖本地 tag 指向补丁版（见 git cat-file 处），因此本地 tag
+          # 必须保持 fork 版；上游 tag 清单改用 ls-remote 获取（见 Version gate）。
+          git fetch upstream --no-tags --prune
 
       # 门禁：只有出现 fork 尚未处理的 v* tag，或手动 force_build 时才继续。
       # 「已处理」的判定不是 tag 是否存在，而是该 tag 的 tree 里是否已有补丁 Kotlin——
