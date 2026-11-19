@@ -1,0 +1,177 @@
+name: Sync upstream & build tagged APK
+
+# 北京时间早 07:00 = UTC 23:00。
+# 职责：同步上游 main 与 v* tag → re-apply 方控补丁 → 在 fork 上把 tag 指向补丁版本
+#       → 派发 build-and-release.yml 构建 APK。
+# 注意：GITHUB_TOKEN 创建的 push 不会触发其他工作流，所以最后一步必须走
+#       workflow_dispatch（GitHub 官方文档明确的例外），不能用 push 指望自动出包。
+on:
+  schedule:
+    - cron: "0 23 * * *"
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: "即使没有新 tag 也重新构建最新 tag"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: lynx-sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        env:
+          UPSTREAM_URL: https://github.com/songloft-org/songloft-player-lynx.git
+        run: |
+          set -euo pipefail
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch upstream --tags --prune
+
+      # 门禁：只有出现 fork 尚未处理的 v* tag，或手动 force_build 时才继续。
+      # 「已处理」的判定不是 tag 是否存在，而是该 tag 的 tree 里是否已有我们的注入脚本——
+      # 这样刚 fork 时从上游带过来的同名 tag 不会被误认为已构建。
+      - name: Version gate
+        id: version_gate
+        env:
+          FORCE_BUILD: ${{ inputs.force_build || 'false' }}
+        run: |
+          set -euo pipefail
+          LOCAL_VERSION=$(python3 -c 'import json;print(json.load(open("package.json"))["version"])')
+          UPSTREAM_VERSION=$(git show upstream/main:package.json \
+            | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])')
+          echo "fork 版本=$LOCAL_VERSION 上游版本=$UPSTREAM_VERSION"
+
+          NEW_TAGS=""
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            tag_version=${tag#v}
+            # 只处理比 fork 当前版本更新的 tag：刚 fork 时上游已有几十个历史 tag，
+            # 不加这道过滤会把历史版本全部重构建一遍。
+            LATEST=$(printf '%s\n%s\n' "$LOCAL_VERSION" "$tag_version" | sort -V | tail -1)
+            if [ "$tag_version" = "$LOCAL_VERSION" ] || [ "$LATEST" != "$tag_version" ]; then
+              echo "  $tag 不比 fork 版本新，跳过"
+              continue
+            fi
+            if git cat-file -e "refs/tags/$tag:patch/inject_leapmotor.py" 2>/dev/null; then
+              echo "  $tag 已指向补丁版本，跳过"
+              continue
+            fi
+            echo "  $tag 是待处理的新 tag"
+            NEW_TAGS="$NEW_TAGS $tag"
+          done < <(git ls-remote --tags upstream 'refs/tags/v*' \
+                    | grep -v '\^{}' | sed 's#.*refs/tags/##' | sort -V)
+
+          echo "new_tags=$NEW_TAGS" >> "$GITHUB_OUTPUT"
+          LATEST_TAG=$(printf '%s\n' $NEW_TAGS | grep -v '^$' | tail -1 || true)
+          echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$NEW_TAGS" ] && [ "$FORCE_BUILD" != "true" ]; then
+            echo "=== 没有需要处理的新 tag，跳过合并 / 推送 / 构建 ==="
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream main
+        if: steps.version_gate.outputs.skip != '1'
+        run: |
+          set -euo pipefail
+          git merge --no-edit upstream/main
+          echo "=== 已合并上游 main ==="
+
+      # Kotlin 源码与 Manifest 在构建期注入，这里只需保证 fork 的 workflow 里
+      # 有那一步调用。上游若重排 android job，脚本会显式报错而不是静默漏掉。
+      - name: Re-apply steering patch to workflow
+        if: steps.version_gate.outputs.skip != '1'
+        run: python3 patch/inject_leapmotor.py --apply-workflow
+
+      - name: Commit fork changes
+        if: steps.version_gate.outputs.skip != '1'
+        id: commit
+        run: |
+          set -euo pipefail
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "=== fork main 无额外改动 ==="
+          else
+            git add -A
+            git commit -m "chore: 同步上游并重新应用零跑方控补丁"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push main
+        if: steps.version_gate.outputs.skip != '1'
+        run: |
+          set -euo pipefail
+          git push origin main
+          echo "=== 已推送 fork main ==="
+
+      # 把 fork 的 tag 重新指向带补丁的 main HEAD，再触发构建。
+      # 这样 CI checkout tag 时拿到的就是补丁版本，而不是上游原版。
+      - name: Move tags to patched HEAD and dispatch builds
+        if: steps.version_gate.outputs.skip != '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_TAGS: ${{ steps.version_gate.outputs.new_tags }}
+          FORCE_BUILD: ${{ inputs.force_build || 'false' }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TAGS="$NEW_TAGS"
+          if [ -z "$TAGS" ] && [ "$FORCE_BUILD" = "true" ]; then
+            TAGS=$(git tag --list 'v*' --sort=-V:refname | head -1)
+          fi
+          if [ -z "$TAGS" ]; then
+            echo "=== 无 tag 需要构建 ==="
+            exit 0
+          fi
+          HEAD_SHA=$(git rev-parse HEAD)
+          for tag in $TAGS; do
+            echo "--- 处理 tag $tag -> $HEAD_SHA ---"
+            git tag -f "$tag" "$HEAD_SHA"
+            git push --force origin "refs/tags/$tag"
+            # 刚 push 的 tag 可能还没被 Actions API 索引，失败时短暂重试
+            DISPATCHED=0
+            for attempt in 1 2 3; do
+              if gh workflow run build-and-release.yml \
+                   --repo "$REPOSITORY" --ref "$tag" 2>/dev/null; then
+                DISPATCHED=1
+                break
+              fi
+              echo "第 $attempt 次派发失败，等待 Actions API 索引后重试"
+              sleep 5
+            done
+            if [ "$DISPATCHED" != "1" ]; then
+              echo "::error::无法派发 $tag 的构建，请到 Actions 页面手动触发"
+              exit 1
+            fi
+            echo "已派发构建：$tag"
+          done
+
+      - name: Abort unfinished merge on failure
+        if: failure()
+        run: |
+          git merge --abort 2>/dev/null || true
+          echo "::warning::同步失败，已回滚未完成的合并状态"
