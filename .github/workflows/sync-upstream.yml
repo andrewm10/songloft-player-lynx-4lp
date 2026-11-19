@@ -18,10 +18,6 @@ on:
 permissions:
   contents: write
   actions: write
-  # GITHUB_TOKEN 修改 .github/workflows/build-and-release.yml（re-apply 注入步骤）
-  # 必须持有 workflows: write，否则 git push 会被 GitHub 拒绝：
-  # "refusing to allow a GitHub App to create or update workflow ... without workflows permission"
-  workflows: write
 
 concurrency:
   group: lynx-sync-upstream
@@ -32,12 +28,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # GITHUB_TOKEN 无权 push 修改 .github/workflows/ 下的文件（GitHub 硬限制），
+      # 必须用带 workflow 写权限的 PAT。漏配就在这里立即失败，避免跑到 push 才报错。
+      - name: Validate SYNC_PAT secret
+        env:
+          SYNC_PAT: ${{ secrets.SYNC_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SYNC_PAT" ]; then
+            echo "::error::缺少 Secret SYNC_PAT。请在仓库 Settings → Secrets → Actions 新建名为 SYNC_PAT 的 secret（fine-grained PAT，勾选 Workflows:write + Contents:write + Actions:write）。GITHUB_TOKEN 无权推送 workflow 文件修改。"
+            exit 1
+          fi
+          echo "=== SYNC_PAT 已配置 ==="
+
       - name: Checkout fork main
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.SYNC_PAT }}
 
       - name: Configure git identity
         run: |
@@ -137,7 +146,7 @@ jobs:
       - name: Move tags to patched HEAD and dispatch builds
         if: steps.version_gate.outputs.skip != '1'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
           NEW_TAGS: ${{ steps.version_gate.outputs.new_tags }}
           FORCE_BUILD: ${{ inputs.force_build || 'false' }}
           REPOSITORY: ${{ github.repository }}
