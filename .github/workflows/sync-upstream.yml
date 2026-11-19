@@ -18,6 +18,10 @@ on:
 permissions:
   contents: write
   actions: write
+  # GITHUB_TOKEN 修改 .github/workflows/build-and-release.yml（re-apply 注入步骤）
+  # 必须持有 workflows: write，否则 git push 会被 GitHub 拒绝：
+  # "refusing to allow a GitHub App to create or update workflow ... without workflows permission"
+  workflows: write
 
 concurrency:
   group: lynx-sync-upstream
