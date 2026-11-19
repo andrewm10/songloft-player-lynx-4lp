@@ -1,10 +1,18 @@
 name: "Sync upstream and build tagged APK"
 
 # 北京时间早 07:00 = UTC 23:00。
-# 职责：同步上游 main 与 v* tag → re-apply 方控补丁 → 在 fork 上把 tag 指向补丁版本
+# 职责：同步上游 main 与 v* tag → re-apply 方控补丁（固化进源码树）→ 在 fork 上把 tag 指向补丁版本
 #       → 派发 build-and-release.yml 构建 APK。
-# 注意：GITHUB_TOKEN 创建的 push 不会触发其他工作流，所以最后一步必须走
-#       workflow_dispatch（GitHub 官方文档明确的例外），不能用 push 指望自动出包。
+#
+# ★ 为什么不需要 PAT（与 Flutter 旧版完全一致的做法）：
+#   方控补丁在 sync 阶段直接复制进 android 源码树 + 改 AndroidManifest.xml，
+#   commit 进 fork main。整个流程【不修改 .github/workflows/ 下的任何文件】——
+#   build-and-release.yml 保持上游原样，CI checkout tag 时源码树已含补丁，直接编译即可。
+#   GITHUB_TOKEN 无权创建/更新 workflow 文件（GitHub 硬限制，加任何 permissions 都绕不过），
+#   但只要不碰 workflow 文件，push 普通源码+清单就畅通无阻。因此不需要配置任何额外 token。
+#
+# GITHUB_TOKEN 创建的 push 不会触发其他工作流，所以最后一步必须走
+# workflow_dispatch（GitHub 官方文档明确的例外），不能用 push 指望自动出包。
 on:
   schedule:
     - cron: "0 23 * * *"
@@ -28,25 +36,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      # GITHUB_TOKEN 无权 push 修改 .github/workflows/ 下的文件（GitHub 硬限制），
-      # 必须用带 workflow 写权限的 PAT。漏配就在这里立即失败，避免跑到 push 才报错。
-      - name: Validate SYNC_PAT secret
-        env:
-          SYNC_PAT: ${{ secrets.SYNC_PAT }}
-        run: |
-          set -euo pipefail
-          if [ -z "$SYNC_PAT" ]; then
-            echo "::error::缺少 Secret SYNC_PAT。请在仓库 Settings → Secrets → Actions 新建名为 SYNC_PAT 的 secret（fine-grained PAT，勾选 Workflows:write + Contents:write + Actions:write）。GITHUB_TOKEN 无权推送 workflow 文件修改。"
-            exit 1
-          fi
-          echo "=== SYNC_PAT 已配置 ==="
-
       - name: Checkout fork main
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
-          token: ${{ secrets.SYNC_PAT }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Configure git identity
         run: |
@@ -63,7 +58,7 @@ jobs:
           git fetch upstream --tags --prune
 
       # 门禁：只有出现 fork 尚未处理的 v* tag，或手动 force_build 时才继续。
-      # 「已处理」的判定不是 tag 是否存在，而是该 tag 的 tree 里是否已有我们的注入脚本——
+      # 「已处理」的判定不是 tag 是否存在，而是该 tag 的 tree 里是否已有补丁 Kotlin——
       # 这样刚 fork 时从上游带过来的同名 tag 不会被误认为已构建。
       - name: Version gate
         id: version_gate
@@ -87,7 +82,7 @@ jobs:
               echo "  $tag 不比 fork 版本新，跳过"
               continue
             fi
-            if git cat-file -e "refs/tags/$tag:patch/inject_leapmotor.py" 2>/dev/null; then
+            if git cat-file -e "refs/tags/$tag:android/app/src/main/java/org/songloft/lynx/Leapmotor24Wheel.kt" 2>/dev/null; then
               echo "  $tag 已指向补丁版本，跳过"
               continue
             fi
@@ -107,29 +102,35 @@ jobs:
             echo "skip=0" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Merge upstream main
+      # 合并策略同 Flutter 旧版：冲突一律取上游（-X theirs），再把补丁重新打回去。
+      # 这样上游对 Manifest / package.json 的改动自动并入，而我方补丁随后 re-apply 覆盖。
+      - name: "Merge upstream main (conflict: prefer upstream)"
         if: steps.version_gate.outputs.skip != '1'
         run: |
           set -euo pipefail
-          git merge --no-edit upstream/main
-          echo "=== 已合并上游 main ==="
+          if ! git merge -X theirs --no-edit upstream/main; then
+            echo "::error::合并上游出现无法自动解决的冲突（非内容级），已回滚。"
+            git merge --abort 2>/dev/null || true
+            exit 1
+          fi
+          echo "=== 已合并上游 main（冲突取上游，补丁随后 re-apply）==="
 
-      # Kotlin 源码与 Manifest 在构建期注入，这里只需保证 fork 的 workflow 里
-      # 有那一步调用。上游若重排 android job，脚本会显式报错而不是静默漏掉。
-      - name: Re-apply steering patch to workflow
+      # ★ 关键：只 re-apply 源码树，绝不改 .github/workflows/ 下的文件。
+      # 构建工作流保持上游原样；CI checkout tag 时源码树已含方控补丁，直接编译。
+      - name: Re-apply steering patch to source tree
         if: steps.version_gate.outputs.skip != '1'
-        run: python3 patch/inject_leapmotor.py --apply-workflow
+        run: python3 patch/inject_leapmotor.py --apply-source
 
       - name: Commit fork changes
         if: steps.version_gate.outputs.skip != '1'
         id: commit
         run: |
           set -euo pipefail
-          if git diff --quiet && git diff --cached --quiet; then
+          git add -A
+          if git diff --cached --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "=== fork main 无额外改动 ==="
           else
-            git add -A
             git commit -m "chore: 同步上游并重新应用零跑方控补丁"
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
@@ -146,7 +147,7 @@ jobs:
       - name: Move tags to patched HEAD and dispatch builds
         if: steps.version_gate.outputs.skip != '1'
         env:
-          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEW_TAGS: ${{ steps.version_gate.outputs.new_tags }}
           FORCE_BUILD: ${{ inputs.force_build || 'false' }}
           REPOSITORY: ${{ github.repository }}
