@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       force_build:
-        description: "即使没有新 tag 也重新构建最新 tag"
+        description: "手动 Run 已默认强制构建，此开关保留作兼容，可不勾"
         type: boolean
         default: false
 
@@ -37,7 +37,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout fork main
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: main
           fetch-depth: 0
@@ -63,40 +63,60 @@ jobs:
       - name: Version gate
         id: version_gate
         env:
-          FORCE_BUILD: ${{ inputs.force_build || 'false' }}
+          # 手动 Run workflow 一律视为强制构建：点 Run 就是想出包，
+          # 不能再因为「fork 版本 == 上游最新 tag」被挡掉。只有定时触发才走版本门禁。
+          FORCE_BUILD: ${{ github.event_name == 'workflow_dispatch' || inputs.force_build }}
         run: |
           set -euo pipefail
           LOCAL_VERSION=$(python3 -c 'import json;print(json.load(open("package.json"))["version"])')
           UPSTREAM_VERSION=$(git show upstream/main:package.json \
             | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])')
-          echo "fork 版本=$LOCAL_VERSION 上游版本=$UPSTREAM_VERSION"
+          echo "fork 版本=$LOCAL_VERSION 上游版本=$UPSTREAM_VERSION 强制构建=$FORCE_BUILD"
 
-          NEW_TAGS=""
-          while IFS= read -r tag; do
-            [ -n "$tag" ] || continue
-            tag_version=${tag#v}
-            # 只处理比 fork 当前版本更新的 tag：刚 fork 时上游已有几十个历史 tag，
-            # 不加这道过滤会把历史版本全部重构建一遍。
-            LATEST=$(printf '%s\n%s\n' "$LOCAL_VERSION" "$tag_version" | sort -V | tail -1)
-            if [ "$tag_version" = "$LOCAL_VERSION" ] || [ "$LATEST" != "$tag_version" ]; then
-              echo "  $tag 不比 fork 版本新，跳过"
-              continue
+          # 上游 v* tag。fetch upstream --tags 已把这些 ref 带到本地，
+          # 但这里仍以 ls-remote 为准，避免 fork 自身 tag 状态干扰判断。
+          UPSTREAM_TAGS=$(git ls-remote --tags upstream 'refs/tags/v*' \
+            | grep -v '\^{}' | sed 's#.*refs/tags/##' | sort -V)
+          LATEST_UPSTREAM_TAG=$(printf '%s\n' "$UPSTREAM_TAGS" | grep -v '^$' | tail -1 || true)
+          echo "上游 tag: $(printf '%s' "$UPSTREAM_TAGS" | tr '\n' ' ')"
+          echo "上游最新 tag=$LATEST_UPSTREAM_TAG"
+
+          if [ "$FORCE_BUILD" = "true" ]; then
+            # 手动/强制：直接选上游最新 tag，完全跳过版本比对。
+            # 典型场景就是 fork 与上游版本相同、但 fork 里还没有带补丁的包。
+            if [ -z "$LATEST_UPSTREAM_TAG" ]; then
+              echo "::error::上游没有任何 v* tag，无法构建"
+              exit 1
             fi
-            if git cat-file -e "refs/tags/$tag:android/app/src/main/java/org/songloft/lynx/Leapmotor24Wheel.kt" 2>/dev/null; then
-              echo "  $tag 已指向补丁版本，跳过"
-              continue
-            fi
-            echo "  $tag 是待处理的新 tag"
-            NEW_TAGS="$NEW_TAGS $tag"
-          done < <(git ls-remote --tags upstream 'refs/tags/v*' \
-                    | grep -v '\^{}' | sed 's#.*refs/tags/##' | sort -V)
+            NEW_TAGS="$LATEST_UPSTREAM_TAG"
+            echo "=== 强制构建模式：选用 $NEW_TAGS ==="
+          else
+            # 定时：只处理比 fork 版本新的 tag，避免历史版本全部重构建。
+            NEW_TAGS=""
+            while IFS= read -r tag; do
+              [ -n "$tag" ] || continue
+              tag_version=${tag#v}
+              LATEST=$(printf '%s\n%s\n' "$LOCAL_VERSION" "$tag_version" | sort -V | tail -1)
+              if [ "$tag_version" = "$LOCAL_VERSION" ] || [ "$LATEST" != "$tag_version" ]; then
+                echo "  $tag 不比 fork 版本新，跳过"
+                continue
+              fi
+              if git cat-file -e "refs/tags/$tag:android/app/src/main/java/org/songloft/lynx/Leapmotor24Wheel.kt" 2>/dev/null; then
+                echo "  $tag 已指向补丁版本，跳过"
+                continue
+              fi
+              echo "  $tag 是待处理的新 tag"
+              NEW_TAGS="$NEW_TAGS $tag"
+            done <<< "$UPSTREAM_TAGS"
+            echo "=== 定时模式：待处理 tag =${NEW_TAGS:- 无} ==="
+          fi
 
           echo "new_tags=$NEW_TAGS" >> "$GITHUB_OUTPUT"
           LATEST_TAG=$(printf '%s\n' $NEW_TAGS | grep -v '^$' | tail -1 || true)
           echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
 
-          if [ -z "$NEW_TAGS" ] && [ "$FORCE_BUILD" != "true" ]; then
-            echo "=== 没有需要处理的新 tag，跳过合并 / 推送 / 构建 ==="
+          if [ -z "$NEW_TAGS" ]; then
+            echo "=== 没有需要处理的 tag，跳过合并 / 推送 / 构建 ==="
             echo "skip=1" >> "$GITHUB_OUTPUT"
           else
             echo "skip=0" >> "$GITHUB_OUTPUT"
@@ -149,17 +169,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEW_TAGS: ${{ steps.version_gate.outputs.new_tags }}
-          FORCE_BUILD: ${{ inputs.force_build || 'false' }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           TAGS="$NEW_TAGS"
-          if [ -z "$TAGS" ] && [ "$FORCE_BUILD" = "true" ]; then
-            TAGS=$(git tag --list 'v*' --sort=-V:refname | head -1)
-          fi
           if [ -z "$TAGS" ]; then
-            echo "=== 无 tag 需要构建 ==="
-            exit 0
+            # 门禁已决定跳过，正常路径不会到这里；到这里说明前后逻辑不一致，
+            # 明确失败，避免再出现「工作流显示成功但没出包」的静默情况。
+            echo "::error::门禁未产出 new_tags，无法派发构建"
+            exit 1
           fi
           HEAD_SHA=$(git rev-parse HEAD)
           for tag in $TAGS; do
