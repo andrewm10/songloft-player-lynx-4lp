@@ -22,9 +22,6 @@ env:
   SONGLOFT_TEST_BRIDGE: "false"
 
 jobs:
-  backend:
-    uses: ./.github/workflows/resolve-backend.yml
-
   prepare:
     name: JS validation and build metadata
     runs-on: ubuntu-latest
@@ -32,7 +29,6 @@ jobs:
       version: ${{ steps.metadata.outputs.version }}
       native_version: ${{ steps.metadata.outputs.native_version }}
       build_number: ${{ steps.metadata.outputs.build_number }}
-      build_time: ${{ steps.metadata.outputs.build_time }}
       channel: ${{ steps.metadata.outputs.channel }}
       release_tag: ${{ steps.metadata.outputs.release_tag }}
     steps:
@@ -51,10 +47,7 @@ jobs:
           SONGLOFT_UPDATE_PUBLIC_KEY: ${{ vars.LYNX_UPDATE_PUBLIC_KEY }}
         run: node scripts/prepare-build.mjs
       - run: pnpm run typecheck
-      - name: Build shared JS and desktop source metadata
-        run: |
-          pnpm run desktop:build --without-probe
-          mv dist/desktop-build.json .build/desktop-build.json
+      - run: pnpm run build
       - run: pnpm test
       - run: pnpm run test:release
       - name: Share the exact bundles and metadata with all platforms
@@ -66,7 +59,6 @@ jobs:
             .build/version.json
             .build/native-host.json
             .build/bundle-host.json
-            .build/desktop-build.json
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
@@ -114,13 +106,9 @@ jobs:
           retention-days: 7
 
   android:
-    name: Android APK (${{ matrix.variant }})
-    needs: [prepare, backend]
+    name: Android APK
+    needs: prepare
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [standard]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -136,50 +124,7 @@ jobs:
           java-version: "17"
       - uses: android-actions/setup-android@v4
         with:
-          packages: platform-tools platforms;android-34 build-tools;34.0.0 ndk;27.2.12479018
-      - uses: actions/checkout@v4
-        if: matrix.variant == 'bundled'
-        with:
-          repository: songloft-org/songloft
-          ref: ${{ needs.backend.outputs.sha }}
-          path: backend-source
-          persist-credentials: false
-      - uses: actions/setup-go@v5
-        if: matrix.variant == 'bundled'
-        with:
-          go-version: "1.26.x"
-          cache-dependency-path: backend-source/go.sum
-      - name: Initialize backend tag dependency
-        if: matrix.variant == 'bundled'
-        run: git -C backend-source submodule update --init --depth 1 pkg/tag
-      - name: Verify the mobile API
-        if: matrix.variant == 'bundled'
-        working-directory: backend-source
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${{ needs.backend.outputs.sha }}"
-          go doc ./mobile | sed -n '/^func /p' | sort > "$RUNNER_TEMP/mobile-export-surface.txt"
-          sort mobile/export_surface.txt > "$RUNNER_TEMP/mobile-export-surface.expected"
-          diff -u "$RUNNER_TEMP/mobile-export-surface.expected" "$RUNNER_TEMP/mobile-export-surface.txt"
-      - name: Build Go backend for Lynx Android
-        if: matrix.variant == 'bundled'
-        working-directory: backend-source
-        env:
-          BACKEND_VERSION: ${{ needs.backend.outputs.version }}
-          BACKEND_COMMIT: ${{ needs.backend.outputs.sha }}
-          BACKEND_BUILD_TIME: ${{ needs.prepare.outputs.build_time }}
-        run: |
-          if [ ! -f internal/database/sqlite_android.go ]; then
-            echo "::error::Songloft backend main does not include the Android SQLite implementation."
-            exit 1
-          fi
-          mkdir -p "$GITHUB_WORKSPACE/android/app/libs"
-          GOMOBILE_VERSION=$(go list -m -f '{{.Version}}' golang.org/x/mobile)
-          go install "golang.org/x/mobile/cmd/gomobile@$GOMOBILE_VERSION" \
-            "golang.org/x/mobile/cmd/gobind@$GOMOBILE_VERSION"
-          LDFLAGS="-s -w -X songloft/internal/version.Version=$BACKEND_VERSION -X songloft/internal/version.GitCommit=$BACKEND_COMMIT -X songloft/internal/version.BuildTime=$BACKEND_BUILD_TIME"
-          GOFLAGS=-buildvcs=false gomobile bind -v -target=android/arm64,android/arm,android/amd64,android/386 -androidapi 23 \
-            -tags lite -ldflags="$LDFLAGS" -o "$GITHUB_WORKSPACE/android/app/libs/songloft.aar" ./mobile
+          packages: platform-tools platforms;android-34 build-tools;34.0.0
       - uses: gradle/actions/setup-gradle@v4
       - name: Configure release signing
         # Fork PRs compile a local debug-signed release APK without publishing.
@@ -207,29 +152,20 @@ jobs:
       - name: Inspect APK version, payload and signature
         run: |
           set -euo pipefail
-          PACKAGE="songloft-lynx-${{ matrix.variant == 'bundled' && 'bundled-' || '' }}android.apk"
-          cp android/app/build/outputs/apk/release/app-release.apk "$PACKAGE"
-          VERIFY_ARGS=(android "$PACKAGE" .build/version.json --variant "${{ matrix.variant }}")
-          if [[ "${{ matrix.variant }}" == bundled ]]; then
-            VERIFY_ARGS+=(--backend-sha "${{ needs.backend.outputs.sha }}")
-          fi
-          python3 scripts/verify-package.py "${VERIFY_ARGS[@]}"
-          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose "$PACKAGE"
+          cp android/app/build/outputs/apk/release/app-release.apk songloft-lynx-android.apk
+          python3 scripts/verify-package.py android songloft-lynx-android.apk .build/version.json
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose songloft-lynx-android.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: release-android-${{ matrix.variant }}
-          path: songloft-lynx-${{ matrix.variant == 'bundled' && 'bundled-' || '' }}android.apk
+          name: release-android
+          path: songloft-lynx-android.apk
           if-no-files-found: error
           retention-days: 7
 
   ios:
-    name: iOS IPA (unsigned, ${{ matrix.variant }})
-    needs: [prepare, backend]
+    name: iOS IPA (unsigned)
+    needs: prepare
     runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [standard]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -250,53 +186,6 @@ jobs:
           printf '%s\n' "$TOOLCHAIN" "iPhoneOS SDK build: $SDK" "macOS build: $OS_BUILD"
           CACHE_ID=$(printf '%s\n' "$TOOLCHAIN" "$SDK" "$OS_BUILD" | shasum -a 256 | cut -d ' ' -f1)
           echo "cache_id=$CACHE_ID" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
-        if: matrix.variant == 'bundled'
-        with:
-          repository: songloft-org/songloft
-          ref: ${{ needs.backend.outputs.sha }}
-          path: backend-source
-          persist-credentials: false
-      - uses: actions/setup-go@v5
-        if: matrix.variant == 'bundled'
-        with:
-          go-version: "1.26.x"
-          cache-dependency-path: backend-source/go.sum
-      - name: Initialize backend tag dependency
-        if: matrix.variant == 'bundled'
-        run: git -C backend-source submodule update --init --depth 1 pkg/tag
-      - name: Verify the mobile API
-        if: matrix.variant == 'bundled'
-        working-directory: backend-source
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${{ needs.backend.outputs.sha }}"
-          go doc ./mobile | sed -n '/^func /p' | sort > "$RUNNER_TEMP/mobile-export-surface.txt"
-          sort mobile/export_surface.txt > "$RUNNER_TEMP/mobile-export-surface.expected"
-          diff -u "$RUNNER_TEMP/mobile-export-surface.expected" "$RUNNER_TEMP/mobile-export-surface.txt"
-      - name: Build Go backend for Lynx iOS
-        if: matrix.variant == 'bundled'
-        working-directory: backend-source
-        env:
-          BACKEND_VERSION: ${{ needs.backend.outputs.version }}
-          BACKEND_COMMIT: ${{ needs.backend.outputs.sha }}
-          BACKEND_BUILD_TIME: ${{ needs.prepare.outputs.build_time }}
-        run: |
-          mkdir -p "$GITHUB_WORKSPACE/ios"
-          GOMOBILE_VERSION=$(go list -m -f '{{.Version}}' golang.org/x/mobile)
-          go install "golang.org/x/mobile/cmd/gomobile@$GOMOBILE_VERSION" \
-            "golang.org/x/mobile/cmd/gobind@$GOMOBILE_VERSION"
-          LDFLAGS="-s -w -X songloft/internal/version.Version=$BACKEND_VERSION -X songloft/internal/version.GitCommit=$BACKEND_COMMIT -X songloft/internal/version.BuildTime=$BACKEND_BUILD_TIME"
-          GOFLAGS=-buildvcs=false gomobile bind -v -target=ios/arm64 -tags lite \
-            -ldflags="$LDFLAGS" -o "$GITHUB_WORKSPACE/ios/Songloft.xcframework" ./mobile
-          printf '%s\n' \
-            'SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) HAS_SONGLOFT_BACKEND' \
-            'FRAMEWORK_SEARCH_PATHS = $(inherited) "$(SRCROOT)/Songloft.xcframework/ios-arm64"' \
-            'OTHER_LDFLAGS = $(inherited) -framework Songloft' \
-            > "$GITHUB_WORKSPACE/ios/SongloftBackend.xcconfig"
-      - name: Configure standard iOS build
-        if: matrix.variant == 'standard'
-        run: printf '%s\n' 'SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited)' > ios/SongloftBackend.xcconfig
       # Xcode's content-addressed compilation cache works across fresh checkouts;
       # caching DerivedData alone would still invalidate inputs with new mtimes.
       - name: Restore iOS compilation and CocoaPods caches
@@ -373,7 +262,6 @@ jobs:
         run: |
           xcodebuild -workspace SongloftLynx.xcworkspace -scheme SongloftLynx \
             -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
-            -xcconfig SongloftBackend.xcconfig \
             -derivedDataPath build/DerivedData \
             -showBuildTimingSummary \
             COMPILATION_CACHE_ENABLE_CACHING=YES \
@@ -387,20 +275,10 @@ jobs:
           set -euo pipefail
           APP=ios/build/DerivedData/Build/Products/Release-iphoneos/SongloftLynx.app
           test -d "$APP"
-          if [[ "${{ matrix.variant }}" == bundled ]]; then
-            nm "$APP/SongloftLynx" | grep -E ' [Tt] _MobileStart$'
-          else
-            ! nm "$APP/SongloftLynx" | grep -E ' [Tt] _MobileStart$'
-          fi
           mkdir Payload
           cp -R "$APP" Payload/
-          PACKAGE="songloft-lynx-${{ matrix.variant == 'bundled' && 'bundled-' || '' }}ios-nosign.ipa"
-          zip -qry "$PACKAGE" Payload
-          VERIFY_ARGS=(ios "$PACKAGE" .build/version.json --variant "${{ matrix.variant }}")
-          if [[ "${{ matrix.variant }}" == bundled ]]; then
-            VERIFY_ARGS+=(--backend-sha "${{ needs.backend.outputs.sha }}")
-          fi
-          python3 scripts/verify-package.py "${VERIFY_ARGS[@]}"
+          zip -qry songloft-lynx-ios-nosign.ipa Payload
+          python3 scripts/verify-package.py ios songloft-lynx-ios-nosign.ipa .build/version.json
       - name: Save iOS compilation and CocoaPods caches
         if: github.event_name != 'pull_request'
         uses: actions/cache/save@v4
@@ -412,8 +290,8 @@ jobs:
           key: ${{ steps.ios-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v4
         with:
-          name: release-ios-${{ matrix.variant }}
-          path: songloft-lynx-${{ matrix.variant == 'bundled' && 'bundled-' || '' }}ios-nosign.ipa
+          name: release-ios
+          path: songloft-lynx-ios-nosign.ipa
           if-no-files-found: error
           retention-days: 7
 
@@ -504,208 +382,11 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  desktop:
-    name: Desktop (${{ matrix.target }})
-    # Standard desktop assets use fixed names: songloft-lynx-standard-win32-x64.exe,
-    # songloft-lynx-standard-darwin-arm64.zip, songloft-lynx-standard-darwin-arm64.dmg,
-    # songloft-lynx-standard-darwin-x64.zip, and songloft-lynx-standard-darwin-x64.dmg.
-    # Bundle names are published by
-    # the backend repository release workflow.
-    needs: [prepare, backend]
-    # Repositories without the desktop SDK retain the existing release targets.
-    if: needs.prepare.outputs.channel != 'preview' && (vars.DESKTOP_SDK_INDEX_URL != '' || vars.DESKTOP_SDK_INDEX_SHA256 != '')
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: windows-2022
-            target: win32-x64
-            arch: x64
-            variant: standard
-          - runner: macos-15
-            target: darwin-arm64
-            arch: arm64
-            variant: standard
-          - runner: macos-15-intel
-            target: darwin-x64
-            arch: x64
-            variant: standard
-    runs-on: ${{ matrix.runner }}
-    defaults:
-      run:
-        shell: bash
-    env:
-      SONGLOFT_DESKTOP_CHANNEL: ${{ needs.prepare.outputs.channel }}
-      SONGLOFT_BACKEND_COMMIT: ${{ needs.backend.outputs.sha }}
-      SONGLOFT_BACKEND_SOURCE: ${{ github.workspace }}/backend-source
-      SONGLOFT_DESKTOP_SDK: ${{ github.workspace }}/desktop-sdk
-      SONGLOFT_MPV_ROOT: ${{ github.workspace }}/desktop-sdk/build
-      SDK_INDEX_URL: ${{ vars.DESKTOP_SDK_INDEX_URL }}
-      SDK_INDEX_SHA256: ${{ vars.DESKTOP_SDK_INDEX_SHA256 }}
-      DESKTOP_TARGET: ${{ matrix.target }}
-      SONGLOFT_DESKTOP_VARIANT: ${{ matrix.variant }}
-      # Hash the same checked-out source bytes on all three runners.
-      GIT_CONFIG_COUNT: '1'
-      GIT_CONFIG_KEY_0: core.autocrlf
-      GIT_CONFIG_VALUE_0: 'false'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.18.0'
-          architecture: ${{ matrix.arch }}
-      - name: Configure update signing key
-        env:
-          UPDATE_PUBLIC_KEY: ${{ secrets.DESKTOP_UPDATE_PUBLIC_KEY }}
-          REQUIRE_UPDATE_KEY: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
-        run: node desktop/scripts/ci-signing.mjs
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.15.1
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26.x'
-          cache-dependency-path: desktop/updater/go.mod
-      - uses: actions/checkout@v4
-        with:
-          repository: songloft-org/songloft
-          ref: ${{ needs.backend.outputs.sha }}
-          path: backend-source
-          persist-credentials: false
-      - name: Initialize pinned Go dependency
-        working-directory: backend-source
-        run: |
-          test "$(git rev-parse HEAD)" = "$SONGLOFT_BACKEND_COMMIT"
-          if ! git grep -q 'parent-watch-stdin' HEAD -- internal/app/app.go; then
-            echo "::error::Songloft backend main does not support parent-watch-stdin."
-            exit 1
-          fi
-          GIT_TERMINAL_PROMPT=0 git submodule update --init --depth 1 pkg/tag
-      - name: Download and verify SDK
-        run: node desktop/scripts/fetch-sdk.mjs
-      - name: Install dependencies
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm --dir desktop install --frozen-lockfile
-      - uses: actions/download-artifact@v4
-        with:
-          name: js-bundles
-      - name: Restore shared desktop build metadata
-        run: cp .build/desktop-build.json dist/desktop-build.json
-      - run: pnpm desktop:test
-      - name: Native build and helper tests
-        run: |
-          pnpm --dir desktop build:native
-          cd desktop/updater
-          go test ./...
-      - name: macOS text input shortcut guard
-        if: runner.os == 'macOS'
-        run: |
-          clang++ -std=c++17 -fobjc-arc -framework AppKit desktop/tests/keyboard-focus-test.mm -o desktop/.build/${{ matrix.target }}/keyboard-focus-test
-          desktop/.build/${{ matrix.target }}/keyboard-focus-test
-      - name: Build complete resources and installers
-        run: |
-          pnpm --dir desktop build:resources
-          pnpm --dir desktop package
-      - name: Install and verify Windows package
-        if: runner.os == 'Windows'
-        timeout-minutes: 7
-        shell: pwsh
-        run: |
-          $directory = "desktop/release/$env:SONGLOFT_DESKTOP_CHANNEL/$env:DESKTOP_TARGET"
-          $installer = @(Get-ChildItem $directory -Filter *.exe -File)
-          if ($installer.Count -ne 1) { throw 'Expected one Windows installer' }
-          $installation = Join-Path $env:RUNNER_TEMP "Songloft package $([guid]::NewGuid())"
-          # NSIS expects /D last and unquoted, including paths that contain spaces.
-          $result = Start-Process -FilePath $installer[0].FullName -ArgumentList "/S /D=$installation" -PassThru -Wait
-          if ($result.ExitCode -ne 0) { throw "NSIS exited with code $($result.ExitCode)" }
-          $appName = if ($env:SONGLOFT_DESKTOP_CHANNEL -eq 'dev') { 'SongloftDev.exe' } else { 'Songloft.exe' }
-          Get-Item -LiteralPath (Join-Path $installation $appName) | Out-Null
-          $resources = Join-Path $installation 'resources/songloft'
-          foreach ($file in @('native/songloft_mpv.node', 'updater/songloft-update.exe')) {
-            Get-Item -LiteralPath (Join-Path $resources $file) | Out-Null
-          }
-          $backend = Join-Path $resources 'backend/songloft.exe'
-          if ($env:SONGLOFT_DESKTOP_VARIANT -eq 'bundled') {
-            Get-Item -LiteralPath $backend | Out-Null
-          } elseif (Test-Path -LiteralPath $backend) {
-            throw 'Standard Windows package contains the Go backend'
-          }
-          $mpv = @(Get-ChildItem -LiteralPath "$resources/native" -File | Where-Object Name -Match '^(lib)?mpv-2\.dll$')
-          if ($mpv.Count -ne 1) { throw 'Expected one installed libmpv runtime' }
-          foreach ($file in @('cef_extension.node', 'cef_subprocess.exe', 'libcef.dll')) {
-            if (!(Get-ChildItem -LiteralPath $installation -Recurse -File -Filter $file)) {
-              throw "Missing installed CEF resource $file"
-            }
-          }
-          if ((Get-FileHash "$resources/build-info.json").Hash -ne (Get-FileHash "desktop/resources/$env:DESKTOP_TARGET/build-info.json").Hash) {
-            throw 'Installed build metadata does not match packaged identity'
-          }
-          if ((Get-FileHash "$resources/app/main.lynx.bundle").Hash -ne (Get-FileHash "dist/main.lynx.bundle").Hash) {
-            throw 'Installed business bundle does not match the build'
-          }
-          if ($env:SONGLOFT_DESKTOP_VARIANT -eq 'bundled') {
-            $env:Path = "$resources/native;$env:Path"
-            node desktop/tests/backend-integration.mjs "$backend" "$resources/tools" --build-info "$resources/build-info.json"
-            if ($LASTEXITCODE -ne 0) { throw 'Installed Windows backend test failed' }
-          }
-      - name: Verify macOS installers and package
-        if: runner.os == 'macOS'
-        timeout-minutes: 7
-        run: |
-          set -euo pipefail
-          directory="desktop/release/$SONGLOFT_DESKTOP_CHANNEL/$DESKTOP_TARGET"
-          dmgs=("$directory"/*.dmg)
-          zips=("$directory"/*.zip)
-          test "${#dmgs[@]}" -eq 1
-          test -f "${dmgs[0]}"
-          test "${#zips[@]}" -eq 1
-          test -f "${zips[0]}"
-          hdiutil verify "${dmgs[0]}"
-          stage=$(mktemp -d)
-          trap 'rm -rf "$stage"' EXIT
-          ditto -x -k "${zips[0]}" "$stage"
-          apps=("$stage"/*.app)
-          test "${#apps[@]}" -eq 1
-          app="${apps[0]}"
-          test -d "$app"
-          codesign --verify --deep --strict "$app"
-          resources="$app/Contents/Resources/songloft"
-          cmp "$resources/build-info.json" "desktop/resources/$DESKTOP_TARGET/build-info.json"
-          cmp "$resources/app/main.lynx.bundle" dist/main.lynx.bundle
-          test -f "$resources/native/songloft_mpv.node"
-          test -f "$resources/native/lib/libmpv.2.dylib"
-          test -x "$resources/updater/songloft-update"
-          if [[ "$SONGLOFT_DESKTOP_VARIANT" == bundled ]]; then
-            test -x "$resources/backend/songloft"
-            node desktop/tests/backend-integration.mjs "$resources/backend/songloft" "$resources/tools" --build-info "$resources/build-info.json"
-          else
-            test ! -e "$resources/backend/songloft"
-          fi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: desktop-${{ needs.prepare.outputs.channel }}-${{ matrix.variant }}-${{ matrix.target }}
-          path: |
-            desktop/release/${{ needs.prepare.outputs.channel }}/${{ matrix.target }}/*.exe
-            desktop/release/${{ needs.prepare.outputs.channel }}/${{ matrix.target }}/*.dmg
-            desktop/release/${{ needs.prepare.outputs.channel }}/${{ matrix.target }}/*.zip
-            desktop/resources/${{ matrix.target }}/build-info.json
-          if-no-files-found: error
-          retention-days: 7
-
   release:
     name: Publish complete release
-    needs: [prepare, backend, web, android, ios, harmony, desktop]
+    needs: [prepare, web, android, ios, harmony]
     # Manual dispatch can publish dev only from main, or rebuild a v* tag.
-    if: >-
-      !cancelled() && github.event_name != 'pull_request' &&
-      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) &&
-      needs.prepare.result == 'success' && needs.backend.result == 'success' &&
-      needs.web.result == 'success' && needs.android.result == 'success' &&
-      needs.ios.result == 'success' && needs.harmony.result == 'success' &&
-      (needs.desktop.result == 'success' || needs.desktop.result == 'skipped')
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     outputs:
       previous_tag: ${{ steps.previous_tag.outputs.previous_tag }}
@@ -768,48 +449,6 @@ jobs:
         run: |
           cp shared-build/.build/version.json release-files/version.json
           node scripts/finalize-release.mjs release-files shared-build/dist/main.lynx.bundle shared-build/.build/native-host.json
-      - uses: actions/download-artifact@v4
-        if: needs.desktop.result == 'success'
-        with:
-          pattern: desktop-${{ needs.prepare.outputs.channel }}-*
-          path: desktop-builds
-      - uses: pnpm/action-setup@v4
-        if: needs.desktop.result == 'success'
-        with:
-          version: 11.15.1
-      - if: needs.desktop.result == 'success'
-        run: pnpm --dir desktop install --frozen-lockfile --ignore-scripts
-      - name: Verify and sign all desktop update manifests
-        if: needs.desktop.result == 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.prepare.outputs.release_tag }}
-          CHANNEL: ${{ needs.prepare.outputs.channel }}
-          BACKEND_SHA: ${{ needs.backend.outputs.sha }}
-          SONGLOFT_DESKTOP_UPDATE_PRIVATE_KEY_PEM: ${{ secrets.DESKTOP_UPDATE_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          mkdir desktop-previous
-          if [ "$CHANNEL" = dev ]; then
-            previous=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[] | select(.tagName == "dev") | .tagName')
-          else
-            previous=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --json tagName,isLatest --jq '.[] | select(.isLatest) | .tagName')
-          fi
-          if [ -n "$previous" ]; then
-            gh release view "$previous" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' > desktop-existing.txt
-            for variant in standard; do
-              for target in win32-x64 darwin-arm64 darwin-x64; do
-                name="desktop-$variant-$target.json"
-                if grep -Fxq "$name" desktop-existing.txt; then
-                  gh release download "$previous" --repo "$GITHUB_REPOSITORY" --pattern "$name" --dir desktop-previous
-                fi
-              done
-            done
-          fi
-          : "${SONGLOFT_DESKTOP_UPDATE_PRIVATE_KEY_PEM:?Configure DESKTOP_UPDATE_PRIVATE_KEY to publish desktop updates}"
-          node desktop/scripts/prepare-release.mjs "$CHANNEL" "$TAG" "$GITHUB_SHA" "$BACKEND_SHA" desktop-builds desktop-publish desktop-previous
-          mv desktop-publish/assets/* desktop-publish/manifests/* release-files/
-          (cd release-files && sha256sum -- desktop-standard-*.json songloft-lynx-standard-* >> checksums.txt)
       - name: Publish dev or versioned release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -829,10 +468,6 @@ jobs:
             printf '\n' >> "$NOTES"
           fi
           if [ "$CHANNEL" = dev ]; then
-            if [ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$GITHUB_SHA" ]; then
-              echo "::notice::A newer main commit is available; skipping this dev release."
-              exit 0
-            fi
             # Move only the rolling dev tag. Never force-update a versioned tag.
             git tag --force dev "$GITHUB_SHA"
             git push --force origin refs/tags/dev
@@ -842,16 +477,9 @@ jobs:
             else
               gh release create dev release-files/* --repo "$GITHUB_REPOSITORY" --draft --verify-tag --title 'Dev build' --notes-file "$NOTES" --prerelease --latest=false
             fi
-            # Desktop installers use fixed names. Remove legacy version/hash names
-            # so the rolling dev release contains one package per target.
+            # Remove legacy assets so downloads cannot mix old and new naming.
             gh release view dev --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/asset-names.txt"
             while IFS= read -r name; do
-              case "$name" in
-                songloft-lynx-standard-win32-x64.exe|songloft-lynx-standard-darwin-arm64.zip|songloft-lynx-standard-darwin-x64.zip|songloft-lynx-standard-darwin-arm64.dmg|songloft-lynx-standard-darwin-x64.dmg)
-                  continue ;;
-                desktop-standard-win32-x64.json|desktop-standard-darwin-arm64.json|desktop-standard-darwin-x64.json)
-                  continue ;;
-              esac
               if [ ! -f "release-files/$name" ]; then
                 gh release delete-asset dev "$name" --repo "$GITHUB_REPOSITORY" --yes
               fi
