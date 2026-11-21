@@ -141,6 +141,7 @@ beforeEach(() => {
   songsHook.mockReturnValue(songsResult([{ songs: [], total: 0 }]))
   useSongRowOverlays.getState().closeAddToPlaylist()
   useSongRowOverlays.getState().cancelDelete()
+  useSongRowOverlays.getState().cancelBatchRadioMode()
   filterInputs.length = 0
 })
 
@@ -229,7 +230,12 @@ test('caching a select-all result resolves metadata for offscreen IDs instead of
   await act(async () => { fireEvent.tap(getByTestId('library-select-all')) })
   await act(async () => { fireEvent.tap(getByTestId('library-select-cache')) })
   expect(cache.beginSongs).not.toHaveBeenCalled()
-  expect(cache.beginSelection).toHaveBeenCalledExactlyOnceWith({ ids: new Set([1, 2]), filters: { sort: 'added_at', order: 'desc' } })
+  expect(cache.beginSelection).toHaveBeenCalledExactlyOnceWith({
+    ids: new Set([1, 2]),
+    filters: {
+      type: 'local,remote', sort: 'added_at', order: 'desc', excludePlaylistLabels: 'hidden,audiobook',
+    },
+  })
 })
 
 test('an earlier delete completion does not close a newer deselected state', async () => {
@@ -315,7 +321,7 @@ test('visibility changes discard the previous multi-selection and update the son
   expect(queryByText('1 selected')).toBeInTheDocument()
   await act(async () => { rerender(<FlatSongsView {...props} showHidden={false} />) })
   expect(queryByText('1 selected')).not.toBeInTheDocument()
-  expect(songsHook.mock.lastCall?.[0].excludePlaylistLabels).toBeUndefined()
+  expect(songsHook.mock.lastCall?.[0].excludePlaylistLabels).toBe('hidden,audiobook')
 })
 
 test('device caching receives only the current multi-selection and hides its entry on older shells', async () => {
@@ -335,6 +341,19 @@ test('radio multi-selection has no device cache entry even on a capable shell', 
   await act(async () => { fireEvent.tap(getByText('Select')) })
   await act(async () => { fireEvent.tap(getByText('Radio')) })
   expect(queryByTestId('library-select-cache')).not.toBeInTheDocument()
+})
+
+test('radio multi-selection exposes batch mode and exits after the overlay succeeds', async () => {
+  songsHook.mockReturnValue(songsResult([{ songs: [makeSong(1, { title: 'Radio', type: 'radio', isLive: true })], total: 1 }]))
+  const { getByText, getByTestId, queryByText } = await renderView('radio')
+  await act(async () => { fireEvent.tap(getByText('Select')) })
+  await act(async () => { fireEvent.tap(getByText('Radio')) })
+  expect(getByTestId('library-select-radio-mode')).toBeInTheDocument()
+  await act(async () => { fireEvent.tap(getByTestId('library-select-radio-mode')) })
+  expect(useSongRowOverlays.getState().batchRadioMode?.songIds).toEqual([1])
+  await act(async () => { useSongRowOverlays.getState().batchRadioMode!.onUpdated!(1) })
+  expect(queryByText('0 selected')).not.toBeInTheDocument()
+  expect(getByText('Select')).toBeInTheDocument()
 })
 
 async function renderView(
@@ -382,9 +401,11 @@ test('renders the search input and the toolbar (play all / sort / add / select)'
   expect(queryByText('Recent')).toBeInTheDocument()
 })
 
-test('defaults to added_at/desc with no type for the all view', async () => {
+test('defaults to added_at/desc with local and remote for the all view', async () => {
   await renderView()
-  expect(songsHook).toHaveBeenCalledWith({ sort: 'added_at', order: 'desc' })
+  expect(songsHook).toHaveBeenCalledWith({
+    sort: 'added_at', order: 'desc', type: 'local,remote', excludePlaylistLabels: 'hidden,audiobook',
+  })
 })
 
 test('passes the source type into the filters', async () => {
@@ -394,7 +415,9 @@ test('passes the source type into the filters', async () => {
 
 test('a lifted sort id drives the filters (title → asc)', async () => {
   await renderView(undefined, 'title', () => {}, 'asc')
-  expect(songsHook).toHaveBeenCalledWith({ sort: 'title', order: 'asc' })
+  expect(songsHook).toHaveBeenCalledWith({
+    sort: 'title', order: 'asc', type: 'local,remote', excludePlaylistLabels: 'hidden,audiobook',
+  })
 })
 
 test('opening the sort sheet lists all 7 options and picking one reports upward', async () => {

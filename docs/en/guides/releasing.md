@@ -14,13 +14,21 @@
 | Actions → Run workflow     | Select main to rebuild dev, or a v\* tag to build that version                      |
 | Pull request               | Validate/build; Android uses debug signing and HarmonyOS is unsigned; no publishing |
 
-Documentation/license changes do not automatically trigger builds. Manual builds on other branches produce artifacts only. Both dev and versioned publishing require Android, iOS, HarmonyOS, and both Web modes to succeed. Failed platform runs retain their artifacts and do not update the release.
+Documentation/license changes do not automatically trigger builds. Manual builds on other branches produce artifacts only. Dev and stable publishing require Android, iOS, HarmonyOS, and both Web modes to succeed. When enabled, desktop publishing also requires verified packages for Windows x64, macOS arm64, and macOS x64. Failed runs retain available workflow artifacts.
 
-Assets upload to a draft and become public only after every upload succeeds. Dev is temporarily hidden during replacement; a failed upload leaves a draft for inspection and rerun. Existing stable/preview releases, including drafts, cannot be overwritten: inspect any failed draft before manually deleting or publishing it. Dev removes legacy asset names from the same release.
+The publisher rechecks the tip of `main` before updating `dev`. If any commit lands during the build, including a docs-only commit, the older run exits successfully and leaves the existing `dev` release in place. If the log says `A newer main commit is available; skipping this dev release.`, select the latest `main` under **Actions → Build and Release → Run workflow**. Start a new run after changing signing secrets or variables as well. Verify the target commit of `dev` and its assets alongside the workflow result.
+
+Assets upload to a draft and become public only after every upload succeeds. Dev is temporarily hidden during replacement; a failed upload leaves a draft for inspection and rerun. Existing stable/preview releases, including drafts, cannot be overwritten: inspect any failed draft before manually deleting or publishing it. Desktop installers use fixed asset names in the form `songloft-lynx-{variant}-{target}.{ext}`, and dev replacement removes legacy assets whose names contain a version or content hash.
 
 See [installation](installation.md) for filenames. Releases include `version.json` and `checksums.txt`. The new workflow replaces the separate `dev-harmony` entry point; historical releases are not automatically deleted.
 
-Dev, preview, and stable release bodies contain categorized Conventional Commits with commit links. `.github/release-notes.md` retains only installation links to the [Chinese README](../../../README.md#安装与下载) and [English README](../../../README.en.md#installation-and-downloads). Installation/deployment of all five packages, server connection requirements, and SHA-256 verification are maintained in the README files. The range compares the current commit with the most recent merged `v*` tag, skipping tags pointing to the current commit; without a previous version tag, it falls back to the first commit. Only commit types supported by the Flutter workflow are included. If there are no changes to list, only the installation links remain.
+This repository publishes Standard, HarmonyOS, and Web packages. All Desktop Standard targets use the same business bundle. The backend repository separately publishes Android, iOS, and desktop Bundles from pinned backend and Lynx commits and FFmpeg assets. See the [package inventory](https://github.com/songloft-org/songloft/blob/main/docs/en/release-packages.md).
+
+Use the values of this repository's `ANDROID_*` secrets for the backend's Lynx-specific `LYNX_ANDROID_*` secrets to preserve in-place upgrades. Desktop updates use the same `DESKTOP_UPDATE_*` key pair. Trigger each workflow in its own repository. See the [backend signing and release guide](https://songloft.hanxi.cc/en/bundle-mode#release-triggers-and-signing).
+
+Set `DESKTOP_SDK_INDEX_URL`, `DESKTOP_SDK_INDEX_SHA256`, and the [desktop update keys](../../../desktop/README.en.md#ci-and-acceptance) to publish installers and per-architecture signed manifests to the shared `dev` or stable `vX.Y.Z` Release. When both SDK variables are absent, the workflow builds the mobile and Web packages. Prerelease tags continue to build mobile and Web packages.
+
+Dev, preview, and stable release bodies contain categorized Conventional Commits with commit links. `.github/release-notes.md` retains only installation links to the [Chinese README](../../../README.md#安装与下载) and [English README](../../../README.en.md#installation-and-downloads). Installation and deployment of each platform package, server connection requirements, and SHA-256 verification are maintained in the README files. The range compares the current commit with the most recent merged `v*` tag, skipping tags pointing to the current commit; without a previous version tag, it falls back to the first commit. Only commit types supported by the Flutter workflow are included. If there are no changes to list, only the installation links remain.
 
 After a version-tag release succeeds, a separate job updates the Chinese-only root `CHANGELOG.md` from the latest `main`, localizes generated category headings and author labels, and commits it back. Updates for different versions run serially. Dev builds do not write this file, and changelog commits do not trigger another build. An English CHANGELOG is intentionally omitted as requested.
 
@@ -64,7 +72,7 @@ iOS builds a device Release app explicitly labeled `nosign`. Certificate import 
 
 Bundle updates use an independent RSA signing identity: repository variable `LYNX_UPDATE_PUBLIC_KEY` (SPKI PEM public key) and secret `LYNX_UPDATE_PRIVATE_KEY` (PKCS#8 PEM private key). Only the release job receives the private key; it never enters JS, packages, artifacts, or logs. Prepare embeds the public key into the immutable same-build shell snapshot. The key ID derives from its hash. See [client update protocol](../reference/client-updates.md).
 
-Without a private key, the five full packages still publish without unsigned hot-update assets. A private key with a missing/mismatched public key, or a key change between prepare and release, fails publishing. Initial hot updates require installing the P2b updater shell with its trusted public key; P2a does not provide the client UI yet. Key rotation also requires a shell trusting the new key.
+Full packages still publish when the private key is absent. Publishing fails if a configured private key lacks its matching public key or if the public key changes between build and publishing. Mobile hot updates require a native shell with the updater and trusted public key installed. During key rotation, update the native shell before publishing a manifest signed by the new key.
 
 ## Manual release script
 
@@ -128,10 +136,10 @@ This generates dev metadata. Ordinary local builds also display dev and carry no
 
 ## Release gates
 
-Prepare runs typechecking, production builds for both JS targets, the full JS suite, and release-tool regressions. Platform jobs compile hosts and inspect embedded bundles, versions/build numbers, Lynx libraries, signatures, and Web asset references. The release job requires all five nonempty packages and generates SHA-256 hashes and a version.json asset manifest.
+Prepare runs typechecking, production builds for both JS targets, the full JS suite, and release-tool regressions. Platform jobs compile hosts and inspect embedded bundles, versions/build numbers, Lynx libraries, signatures, and Web asset references. The release job requires all seven nonempty mobile and Web packages and generates SHA-256 hashes and a version.json asset manifest. When the desktop SDK is configured, it also validates both standard and bundled desktop assets.
 
 With update signing configured, release also validates the prepared shell snapshot, production bundle, and self-contained resource contract, then publishes the native bundle, compatibility declarations, and `version.json.sig`. Signatures cover original manifest bytes; checksums include manifest and signature. Java verification regressions require a JDK and visibly skip if unavailable; other Node protocol tests still run.
 
 Production JS replaces the devtools/E2E entry point by default. Native TestBridge registration/startup is Debug-only and listens on `127.0.0.1:9230`. Downloadable dev packages are Release builds too and cannot be used for TestBridge E2E. See [testing](testing.md) for test builds.
 
-CI verifies compilation and packages. Background playback, permissions, DLNA, video, and HarmonyOS still require device testing. After the new workflow first succeeds, check all five downloads, metadata and signing identities, then test installation and upgrade behavior on actual devices.
+CI verifies compilation and packages. Background playback, permissions, DLNA, video, and HarmonyOS still require device testing. After the new workflow first succeeds, check all seven mobile and Web downloads, both desktop variants, metadata and signing identities, then test installation and upgrade behavior on actual devices.

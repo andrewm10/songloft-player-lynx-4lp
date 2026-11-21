@@ -4,16 +4,22 @@
 
 ## 选择版本
 
-从[正式 Release](https://github.com/songloft-org/songloft-player-lynx/releases/latest)或滚动 [dev Release](https://github.com/songloft-org/songloft-player-lynx/releases/tag/dev)下载。dev 为预览构建，代码推送到 `main` 后自动打包；纯文档修改不触发构建。五个包齐全才更新下载入口。新工作流首次成功前可能仍显示旧流程的产物。
+标准版从 [Lynx 正式 Release](https://github.com/songloft-org/songloft-player-lynx/releases/latest) 或滚动 [Lynx dev Release](https://github.com/songloft-org/songloft-player-lynx/releases/tag/dev) 下载，Bundle 版从后端的 [正式 Release](https://github.com/songloft-org/songloft/releases/latest) 或 [dev Release](https://github.com/songloft-org/songloft/releases/tag/dev) 下载。dev 为预览构建，代码推送到 `main` 后自动打包；纯文档修改不触发构建。启用桌面发布后，Windows 和 macOS 安装包也会放在这两个下载入口。
 
 | 文件                                  | 用途                                     |
 | ------------------------------------- | ---------------------------------------- |
-| `songloft-lynx-android.apk`           | Android，release 签名                    |
-| `songloft-lynx-ios-nosign.ipa`        | iOS，未签名，需自行重签                  |
-| `songloft-lynx-harmony.hap`           | HarmonyOS，签名 HAP                      |
+| `songloft-lynx-android.apk`            | Android 标准版，release 签名，不含本地 Go 后端 |
+| `songloft-lynx-bundled-android.apk`    | Android Bundle 版，release 签名，内嵌 Go 后端 |
+| `songloft-lynx-ios-nosign.ipa`         | iOS 标准版，未签名，需自行重签               |
+| `songloft-lynx-bundled-ios-nosign.ipa` | iOS Bundle 版，未签名，需自行重签，内嵌 Go 后端 |
+| `songloft-lynx-harmony.hap`            | HarmonyOS 标准版，签名 HAP，不含本地 Go 后端 |
 | `songloft-lynx-web-standalone.tar.gz` | 独立静态站，用户填写 API 地址            |
 | `songloft-lynx-web-embedded.tar.gz`   | 同源服务器部署的静态资源                 |
 | `version.json` / `checksums.txt`      | 构建版本、commit、时间、包清单与 SHA-256 |
+
+Windows 10 22H2 以上可选标准版 `songloft-lynx-standard-win32-x64.exe` 或 Bundle 版 `songloft-lynx-bundled-win32-x64.exe`。macOS 13 以上对应选择 `songloft-lynx-standard-darwin-arm64.dmg`、`songloft-lynx-bundled-darwin-arm64.dmg` 或 x64 文件，Apple 芯片选 arm64，Intel 芯片选 x64。macOS 对应的 `.zip` 用于应用内更新。Bundled 版可在登录页或设置页使用本地音乐，标准版连接服务器。
+
+[完整包名清单](https://github.com/songloft-org/songloft/blob/main/docs/release-packages.md)列出 Windows 及两种 macOS 架构的 DMG、ZIP 和其他发布资产。
 
 ## 校验下载
 
@@ -21,7 +27,7 @@
 
 ## Android
 
-最低 Android 5.0（API 21）。允许安装来自所选浏览器/文件管理器的应用，打开 APK 安装。也可运行：
+Bundle APK 最低需要 Android 6.0（API 23），标准 APK 支持 Android 5.0（API 21）。允许安装来自所选浏览器/文件管理器的应用，打开 APK 安装。也可运行：
 
 ```bash
 adb install -r songloft-lynx-android.apk
@@ -53,10 +59,14 @@ embedded 包隐藏 API 地址输入，使用同源后端。它是静态资源包
 
 embedded 同样需要以上响应头，不能仅替换 Go 内嵌资源就假设部署完成。具体部署方式见[Web 部署](web-deployment.md)。
 
-## 连接服务器
+## 本地模式与远程模式
 
-所有平台目前都需要独立运行的 [Songloft 后端](https://github.com/songloft-org/songloft)。本客户端尚无 Bundle 本地模式。
+Android 和 iOS 的 Bundle 安装包包含由后端仓库 Release CI 从同一次发布的固定后端提交编译的 Go 后端。同一 Bundle 安装包可在本地模式和远程服务器间切换，标准版只连接远程服务器；首次启动没有额外的模式选择弹窗。
 
-填写完整服务器 URL、用户名和密码。后端默认端口为 `58091`；新安装后端的初始账号为 `admin/admin`。手机上的 `localhost` 指手机本身，连接开发机需用其可达地址；Android 开发调试可用 `adb reverse tcp:58091 tcp:58091`。
+- **Android Bundle**：首次启用本地模式时通过系统文件夹选择器选音乐目录并授予读取权限。后端启动后自动选择端口，客户端完成健康检查并使用本地生成的管理员凭据登录。
+- **iOS Bundle**：首次启用本地模式时使用应用 Documents 目录，不显示外部目录选择器；可通过系统“文件”应用把音乐放入该目录。
+- **HarmonyOS 与 Web**：安装包不含本地后端，需连接远程服务器。
 
-关于页的版本包含客户端构建信息和服务器版本。「后端更新」升级服务器；客户端更新目前通过重新下载安装包完成。
+远程模式填写完整服务器 URL、用户名和密码。后端默认端口为 `58091`；新安装后端的初始账号为 `admin/admin`。手机上的 `localhost` 指手机本身，连接开发机需用其可达地址；Android 开发调试可用 `adb reverse tcp:58091 tcp:58091`。
+
+切换到远程模式会停止本地后端但保留本地曲库数据。关于页的版本包含客户端构建信息和服务器版本。「后端更新」升级远程服务器；客户端更新目前通过重新下载安装包完成。

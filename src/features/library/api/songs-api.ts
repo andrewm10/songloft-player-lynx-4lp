@@ -28,6 +28,10 @@ import {
   type SongArtist,
 } from '../../../models/artist.js'
 
+export const ALL_MUSIC_TYPE = 'local,remote'
+export const MUSIC_EXCLUDE_PLAYLIST_LABELS = 'hidden,audiobook'
+export const MUSIC_EXCLUDE_PLAYLIST_LABELS_WITH_HIDDEN = 'audiobook'
+
 /**
  * Songs API service, ported from the Flutter `SongsApi`
  * (`features/library/data/songs_api.dart`). It wraps a batch-2 `HttpClient` and
@@ -45,7 +49,7 @@ import {
 
 /** Shared filter set for the songs list + song-ids endpoints. */
 export interface SongsFilters {
-  /** Song source type: `local` / `remote` / `radio`. */
+  /** Song source type set: comma-separated `local`, `remote`, and `radio`. */
   type?: string
   keyword?: string
   /** Filter by `file_path` prefix (e.g. `music/Pop`). */
@@ -76,6 +80,8 @@ export interface PageParams {
 }
 
 export interface FacetParams extends PageParams {
+  type?: string
+  excludePlaylistLabels?: string
   keyword?: string
   sort?: string
   order?: string
@@ -155,6 +161,8 @@ export function buildFacetsQuery(
     limit: params.limit ?? defaultPageSize,
     offset: params.offset ?? 0,
   }
+  putStr(query, 'type', params.type)
+  putStr(query, 'exclude_playlist_labels', params.excludePlaylistLabels)
   putStr(query, 'keyword', params.keyword)
   putStr(query, 'sort', params.sort)
   putStr(query, 'order', params.order)
@@ -257,6 +265,25 @@ export class SongsApi {
     if (data.isVideo !== undefined) body.is_video = data.isVideo
     if (data.radioMode !== undefined) body.radio_mode = data.radioMode
     await this.client.put(`${apiPrefix}/songs/${id}`, body)
+  }
+
+  /** `POST /songs/batch-radio-mode` — update radio playback mode for selected stations. */
+  async batchUpdateRadioMode({
+    ids,
+    radioMode,
+    isVideo,
+  }: {
+    ids: number[]
+    radioMode: RadioMode
+    isVideo?: boolean
+  }): Promise<number> {
+    const body: Record<string, unknown> = {
+      ids,
+      radio_mode: radioMode,
+    }
+    if (isVideo !== undefined) body.is_video = isVideo
+    const res = await this.client.post<{ updated?: number }>(`${apiPrefix}/songs/batch-radio-mode`, body)
+    return Number(res.data?.updated ?? 0)
   }
 
   /**
@@ -365,18 +392,25 @@ export class SongsApi {
    */
   async writeTags(
     id: number,
-    data: { title?: string; artist?: string; album?: string; renameFile?: boolean } = {},
+    data: { title?: string; artist?: string; album?: string; clearFields?: string[]; renameFile?: boolean } = {},
   ): Promise<void> {
     const body: Record<string, unknown> = {}
     if (data.title !== undefined) body.title = data.title
     if (data.artist !== undefined) body.artist = data.artist
     if (data.album !== undefined) body.album = data.album
+    if (data.clearFields?.length) body.clear_fields = data.clearFields
     if (data.renameFile !== undefined) body.rename_file = data.renameFile
     await this.client.put(`${apiPrefix}/songs/${id}/tags`, body)
   }
 
-  async getSongNames(field: 'title' | 'artist' = 'title'): Promise<string[]> {
-    const res = await this.client.get<Record<string, unknown>>(`${apiPrefix}/songs/names`, { query: { field } })
+  async getSongNames(
+    field: 'title' | 'artist' = 'title',
+    filters: Pick<SongsFilters, 'type' | 'excludePlaylistLabels'> = {},
+  ): Promise<string[]> {
+    const query: Record<string, string> = { field }
+    putStr(query, 'type', filters.type)
+    putStr(query, 'exclude_playlist_labels', filters.excludePlaylistLabels)
+    const res = await this.client.get<Record<string, unknown>>(`${apiPrefix}/songs/names`, { query })
     const data = res.data ?? {}
     const names = data.names ?? data.items ?? []
     return Array.isArray(names) ? names.map(String) : []

@@ -7,7 +7,13 @@ import { Input } from '@lynx-js/lynx-ui-input'
 import { AppCheckbox } from '../../../shared/ui/AppCheckbox.js'
 import { useScrollNotifier } from '../../../shared/nav/scroll-visibility.js'
 import type { Song } from '../../../models/song.js'
-import { getSongsApi, type SongsFilters } from '../api/index.js'
+import {
+  ALL_MUSIC_TYPE,
+  MUSIC_EXCLUDE_PLAYLIST_LABELS,
+  MUSIC_EXCLUDE_PLAYLIST_LABELS_WITH_HIDDEN,
+  getSongsApi,
+  type SongsFilters,
+} from '../api/index.js'
 import { flattenSongs } from '../data/pagination.js'
 import { useDebounce } from '../data/use-debounce.js'
 import { useSongsInfiniteQuery } from '../data/songs-query.js'
@@ -49,8 +55,8 @@ const SelectableSongRow = memo(function SelectableSongRow({ song, index, selectM
 })
 
 export interface FlatSongsViewProps {
-  /** Song source filter; `undefined` for the `all` view (no `type` param). */
-  type?: 'local' | 'remote' | 'radio'
+  /** Song source filter; the all-music view sends `local,remote`. */
+  type?: 'local,remote' | 'local' | 'remote' | 'radio'
   /** Sort choice, lifted to the page so it persists + survives view switches. */
   sortId: LibrarySortId
   /** Current sort direction. */
@@ -69,12 +75,13 @@ export interface FlatSongsViewProps {
  * this view only reports changes upward.
  */
 export function FlatSongsView({
-  type, sortId, sortOrder, onSortChange, isWide, showHidden = false,
+  type = ALL_MUSIC_TYPE, sortId, sortOrder, onSortChange, isWide, showHidden = false,
 }: FlatSongsViewProps) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const cacheBatch = useCacheBatchSubmission()
   const canCacheBatch = indexedSongCacheAvailable() && type !== 'radio'
+  const canBatchRadioMode = type === 'radio'
   const { onScroll: onScrollEdge } = useScrollNotifier()
   const [searchText, setSearchText] = useState('')
   const [selectMode, setSelectMode] = useState(false)
@@ -83,13 +90,19 @@ export function FlatSongsView({
   const selectionRequest = useRef(0)
 
   const debouncedSearch = useDebounce(searchText, DEBOUNCE_MS)
+  const nameExcludePlaylistLabels = type === ALL_MUSIC_TYPE
+    ? (showHidden ? MUSIC_EXCLUDE_PLAYLIST_LABELS_WITH_HIDDEN : MUSIC_EXCLUDE_PLAYLIST_LABELS)
+    : (showHidden ? 'none' : undefined)
 
   // Autocomplete: fetch names matching prefix for suggestions
   const [namesCache, setNamesCache] = useState<string[]>([])
   const [namesFetched, setNamesFetched] = useState(false)
   if (searchText.length >= 2 && !namesFetched) {
     setNamesFetched(true)
-    void getSongsApi().getSongNames('title').then(setNamesCache).catch(() => {})
+    void getSongsApi().getSongNames('title', {
+      type,
+      excludePlaylistLabels: nameExcludePlaylistLabels,
+    }).then(setNamesCache).catch(() => {})
   }
   const activeSuggestions = searchText.length >= 2
     ? namesCache.filter(n => n.toLowerCase().includes(searchText.toLowerCase())).slice(0, 5)
@@ -98,7 +111,13 @@ export function FlatSongsView({
   const filters = useMemo<SongsFilters>(() => {
     const f: SongsFilters = { ...librarySortFilters(sortId, sortOrder) }
     if (type) f.type = type
-    if (showHidden) f.excludePlaylistLabels = 'none'
+    if (type === ALL_MUSIC_TYPE) {
+      f.excludePlaylistLabels = showHidden
+        ? MUSIC_EXCLUDE_PLAYLIST_LABELS_WITH_HIDDEN
+        : MUSIC_EXCLUDE_PLAYLIST_LABELS
+    } else if (showHidden) {
+      f.excludePlaylistLabels = 'none'
+    }
     if (debouncedSearch.trim()) f.keyword = debouncedSearch.trim()
     return f
   }, [sortId, sortOrder, debouncedSearch, type, showHidden])
@@ -239,6 +258,15 @@ export function FlatSongsView({
         && (songs.some(song => selected.has(song.id) && song.type === 'local')
           || selected.size > songs.filter(song => selected.has(song.id)).length),
       onDeleted: () => { if (request === selectionRequest.current) exitSelectMode() },
+    })
+  }
+
+  const batchRadioMode = () => {
+    if (!canBatchRadioMode || selectingAll || selected.size === 0) return
+    const request = selectionRequest.current
+    songRowOverlays.requestBatchRadioMode({
+      songIds: Array.from(selected),
+      onUpdated: () => { if (request === selectionRequest.current) exitSelectMode() },
     })
   }
 
@@ -415,6 +443,17 @@ export function FlatSongsView({
             >
               <text className='library__select-toolbar-btn-text'>{t('library.addToPlaylist')}</text>
             </view>
+            {canBatchRadioMode
+              ? (
+                <view
+                  className={selectingAll || selected.size === 0 ? 'library__select-toolbar-btn library__select-toolbar-btn--disabled' : 'library__select-toolbar-btn'}
+                  bindtap={batchRadioMode}
+                  data-testid='library-select-radio-mode'
+                >
+                  <text className='library__select-toolbar-btn-text'>{t('library.batchRadioMode')}</text>
+                </view>
+              )
+              : null}
             {canCacheBatch && <view
               className={cacheBatch.busy || selectingAll || selected.size === 0 ? 'library__select-toolbar-btn library__select-toolbar-btn--disabled' : 'library__select-toolbar-btn'}
               bindtap={() => { if (selected.size > 0) cacheSelected() }}

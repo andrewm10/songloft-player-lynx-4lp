@@ -8,7 +8,7 @@ Songloft Player 的 Lynx 客户端，从 Flutter 版整体重写为 ReactLynx + 
 
 ## 当前状态
 
-当前定位为**预览版**。核心播放、曲库/歌单、歌词、插件、主题、多服务器和管理设置已有实现。关于页已分开提供客户端检查更新和服务器更新：dev 仅检查 dev，正式版仅检查最新正式发布；三端原生 bundle 更新器已接入源码，Android 已完成本地界面下载/取消/冷启动验证，iOS/HarmonyOS 编译与设备验收仍开放。正式更新签名密钥尚未配置，旧壳或不兼容更新提供本通道安装包入口，详见[客户端更新协议](docs/reference/client-updates.md)。原生桌面客户端与 Bundle 本地后端不在本轮范围。
+当前定位为**预览版**。核心播放、曲库/歌单、歌词、插件、主题、多服务器和管理设置已有实现。关于页已分开提供客户端检查更新和服务器更新：dev 仅检查 dev，正式版仅检查最新正式发布；三端原生 bundle 更新器已接入源码，Android 已完成本地界面下载/取消/冷启动验证，iOS/HarmonyOS 编译与设备验收仍开放。Windows/macOS 桌面宿主、Bundle、播放、两类插件和完整应用更新已实现，并通过共享 Build and Release 发布桌面包；正式签名、公证和最终设备矩阵仍开放，详见[实施记录](docs/project/desktop-implementation.md)。
 
 原生设备缓存已有身份/音轨变体索引、整歌单/多选批量任务和本地管理/断网播放入口；过期登录保留仅本地访问，显式退出隐藏旧身份，详见[设备缓存](docs/reference/device-cache.md)。Android 有实际文件/界面验证，iOS/HarmonyOS 的编译与设备验收仍开放。
 
@@ -16,37 +16,43 @@ Web 已提供歌单 JSON 导入/导出，支持选择文件、认证刷新、下
 
 Web 播放设置另有可持久保存的键盘快捷键开关，支持空格播放/暂停、Ctrl/⌘ + 方向键切歌及音量调整。输入/覆盖层/插件焦点保护和 Chrome 实测范围见 [快捷键说明](docs/guides/web-deployment.md#播放键盘快捷键)。
 
+曲库支持组合筛选本地歌曲、网络歌曲与电台。多选电台后可批量设置自动、HLS、HTTP-FLV 或仅音频播放模式。曲库的「播放全部」排除电台和隐藏、有声书歌单中的歌曲。
+
 | 平台                     | 发布产物                     | 使用边界                                                   |
 | ------------------------ | ---------------------------- | ---------------------------------------------------------- |
-| Android 5.0+             | release 签名 APK             | 后台播放、通知与 DLNA 等需持续真机回归                     |
+| Android                  | 签名标准版或 Bundle APK      | 标准版需 Android 5.0+，Bundle 需 Android 6.0+            |
 | iOS 15+                  | 未签名 IPA                   | 安装前需自行重签；Live Activity 需 iOS 16.2+               |
 | HarmonyOS NEXT / API 13+ | 签名 HAP                     | 实验性；已有视频模块与 XComponent 表面，编译和设备行为待验证 |
 | Web                      | standalone / embedded 压缩包 | 无 Bundle、DLNA 与单曲离线缓存；兼容性以实际浏览器验证为准 |
+| Windows / macOS           | 标准版或 Bundle 桌面包        | Windows 10 22H2+ x64，macOS 13+ 支持 Apple 芯片和 Intel    |
 
 ## 安装与下载
 
-- [正式版本](https://github.com/songloft-org/songloft-player-lynx/releases/latest)：版本 tag 发布。
-- [开发版本](https://github.com/songloft-org/songloft-player-lynx/releases/tag/dev)：`main` 代码推送后自动构建，所有平台成功才更新。
+- [标准版正式版本](https://github.com/songloft-org/songloft-player-lynx/releases/latest) 与 [标准版开发版本](https://github.com/songloft-org/songloft-player-lynx/releases/tag/dev)。
+- [Bundle 正式版本](https://github.com/songloft-org/songloft/releases/latest) 与 [Bundle 开发版本](https://github.com/songloft-org/songloft/releases/tag/dev)。
 - [安装指南](docs/guides/installation.md)：包名、签名限制、服务器连接和校验方法。
+- [Windows/macOS 桌面构建](desktop/README.md)：标准版桌面资产在 Lynx Release，Bundle 桌面资产在后端 Release。文件名不含 dev 或 stable，按 `win32-x64`、`darwin-arm64`、`darwin-x64` 选择。
 - [English](README.en.md)
 
-下载以 GitHub Releases 中实际发布的资产为准；四平台 CI 仅在五个包全部构建和校验成功后更新 dev。维护自己的 fork 时需配置签名 Secrets，详见[发版指南](docs/guides/releasing.md)。
+下载以 GitHub Releases 中实际发布的资产为准；四平台 CI 仅在七个移动、Web 包全部构建和校验成功后更新 dev，桌面 variant 另外按配置发布。维护自己的 fork 时需配置签名 Secrets，详见[发版指南](docs/guides/releasing.md)。
 
-本客户端需要连接已运行的 [Songloft 服务器](https://github.com/songloft-org/songloft)，安装后填写服务器地址并登录；客户端不包含本地后端。在 Release 页的 **Assets** 中按平台选包：
+Android 和 iOS 的 Bundle 包内嵌了由后端 Release 流水线从固定主仓库 SHA 构建的 Go 后端，也可连接远程服务器。标准包只连接远程服务器。用户在 Bundle 包的登录页或设置页切换本地/远程模式；首次启用本地模式时选择音乐目录，不会在首次启动时额外弹出模式选择框。Android 使用系统文件夹选择器并授予读取权限；iOS 使用应用 Documents 目录，可通过“文件”应用放入音乐。HarmonyOS 与 Web 包不包含后端，需连接已运行的 [Songloft 服务器](https://github.com/songloft-org/songloft)。在对应 Release 页的 **Assets** 中按平台选包：
 
 | 平台 | 下载文件 | 安装 / 部署方式 |
 | --- | --- | --- |
-| Android | `songloft-lynx-android.apk` | 下载并打开 APK，按系统提示允许安装。安装包使用维护者的发布签名。 |
-| iOS | `songloft-lynx-ios-nosign.ipa` | 未签名设备包，需使用自己的开发者证书和适用于目标设备的 provisioning profile 重签后安装。 |
-| HarmonyOS | `songloft-lynx-harmony.hap` | 使用 DevEco Studio 或 `hdc install songloft-lynx-harmony.hap` 安装；签名 profile 须授权目标设备。 |
+| Android | `songloft-lynx-android.apk` / `songloft-lynx-bundled-android.apk` | 前者为标准版，后者内嵌 Go 后端；下载并打开 APK，按系统提示允许安装。安装包使用维护者的发布签名。 |
+| iOS | `songloft-lynx-ios-nosign.ipa` / `songloft-lynx-bundled-ios-nosign.ipa` | 前者为标准版，后者内嵌 Go 后端；均为未签名设备包，需使用自己的开发者证书和适用于目标设备的 provisioning profile 重签后安装。 |
+| HarmonyOS | `songloft-lynx-harmony.hap` | 标准版，不含本地 Go 后端；使用 DevEco Studio 或 `hdc install songloft-lynx-harmony.hap` 安装。 |
 | Web（独立部署） | `songloft-lynx-web-standalone.tar.gz` | 解压到静态服务器，打开站点后填写 Songloft API 地址。 |
 | Web（同源部署） | `songloft-lynx-web-embedded.tar.gz` | 解压并配置同源静态服务，使用同源后端；不会自动替换服务器现有的内嵌前端。 |
+
+Android Bundle 包含三个 ABI 的 FFmpeg 和 FFprobe。iOS Bundle 将 FFmpeg 静态链接进 Go 后端，探测与转码在应用进程内运行。Windows 和 macOS Bundle 同样使用主仓库发布流水线校验过的 FFmpeg 资产。
 
 Web 部署的响应头、MIME 和浏览器要求见 [Web 部署指南](docs/guides/web-deployment.md)。
 
 **下载校验：** 将安装包与 `checksums.txt` 放在同一目录，Linux 可运行 `sha256sum -c checksums.txt --ignore-missing`；macOS 使用 `shasum -a 256 <文件名>`，Windows 使用 PowerShell `Get-FileHash <文件名> -Algorithm SHA256`，对照清单中的 SHA-256。`version.json` 提供版本、提交、构建时间和包信息。
 
-Release 正文展示分类变更记录，并保留本节的安装说明链接。
+Bundle 模式的后端启动、登录和切换行为见主仓库[Bundle 模式说明](https://github.com/songloft-org/songloft/blob/main/docs/bundle-mode.md)。Release 正文展示分类变更记录，并保留本节的安装说明链接。
 
 ## 技术栈
 

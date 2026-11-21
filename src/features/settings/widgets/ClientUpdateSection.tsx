@@ -7,6 +7,7 @@ import { releaseAsset, releasePage, withGithubProxy } from '../../../core/update
 import { cancelClientBundle, checkClientRelease, downloadClientBundle, refreshUpdateSession, restoreClientBuiltin, updateSession } from '../../../core/updater/update-session.js'
 import { automaticUpdatePolicy } from '../../../core/updater/automatic-update-policy.js'
 import { getPlatformTarget } from '../../../native/platform-target.js'
+import { getPlatformCapabilities } from '../../../native/platform-capabilities.js'
 import { openURL } from '../../../native/native-platform.js'
 import { isWebPlatform } from '../../../native/web-platform.js'
 import { Markdown } from '../../../shared/ui/Markdown.js'
@@ -14,6 +15,8 @@ import { SettingsRow } from './SettingsRow.js'
 import { SettingsSection } from './SettingsSection.js'
 import { SwitchRow } from './SwitchRow.js'
 import './ClientUpdateSection.css'
+import { desktopConfig } from '../../../desktop/client.js'
+import { DesktopUpdateSection } from '../../../desktop/UpdateSection.js'
 
 function errorKey(error: string): string {
   if (['release_rate_limited', 'release_unpublished', 'release_missing_asset', 'release_changed', 'invalid_update_proxy',
@@ -27,6 +30,9 @@ function reasonKey(reason: string): string {
 
 /** Shared manual/automatic update state; prepared bundles activate on the next cold launch. */
 export function ClientUpdateSection() {
+  return desktopConfig() ? <DesktopUpdateSection /> : <SharedClientUpdateSection />
+}
+function SharedClientUpdateSection() {
   const { t } = useTranslation()
   const [session, setSession] = useState(updateSession.getState())
   const [automatic, setAutomatic] = useState(automaticUpdatePolicy.store.getState())
@@ -37,7 +43,7 @@ export function ClientUpdateSection() {
   const { checking, check } = session
   const error = session.checkError ? errorKey(session.checkError) : null
   const identity = updateIdentity(session.native)
-  const page = releasePage(identity.channel)
+  const page = releasePage(identity.channel, getPlatformCapabilities().bundleMode ? 'bundled' : 'standard')
   const busy = checking || session.operation !== null || !!session.native?.download
 
   useEffect(() => {
@@ -68,8 +74,9 @@ export function ClientUpdateSection() {
   }
   const openPackage = () => {
     const platform = getPlatformTarget()
+    const bundled = getPlatformCapabilities().bundleMode
     const assetName = web ? `songloft-lynx-web-${appConfig.isEmbedded ? 'embedded' : 'standalone'}.tar.gz`
-      : platform === 'android' ? 'songloft-lynx-android.apk' : platform === 'ios' ? 'songloft-lynx-ios-nosign.ipa'
+      : platform === 'android' ? `songloft-lynx-${bundled ? 'bundled-' : ''}android.apk` : platform === 'ios' ? `songloft-lynx-${bundled ? 'bundled-' : ''}ios-nosign.ipa`
         : platform === 'harmony' ? 'songloft-lynx-harmony.hap' : null
     const asset = check?.comparison === 'newer' && assetName ? releaseAsset(check.candidate, assetName) : null
     const address = asset && check ? withGithubProxy(asset.browser_download_url, check.candidate.proxy) : page

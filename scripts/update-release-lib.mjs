@@ -92,19 +92,34 @@ export function finalizeRelease({ directory, packageVersion, contract, bundleSou
   nativeHost, publicKey = '', privateKey = '' }) {
   const original = JSON.parse(readFileSync(join(directory, 'version.json'), 'utf8'))
   const metadata = validateBuildMetadata(original, packageVersion)
-  const expected = [
-    'songloft-lynx-android.apk', 'songloft-lynx-ios-nosign.ipa', 'songloft-lynx-harmony.hap',
-    'songloft-lynx-web-standalone.tar.gz', 'songloft-lynx-web-embedded.tar.gz',
-  ]
+  const names = readdirSync(directory)
+  const bundleOnly = names.includes('songloft-lynx-bundled-android.apk') && !names.includes('songloft-lynx-harmony.hap')
+  const expected = bundleOnly
+    ? [
+      'songloft-lynx-bundled-android.apk', 'songloft-lynx-bundled-ios-nosign.ipa',
+      'songloft-lynx-bundled-win32-x64.exe',
+      'songloft-lynx-bundled-darwin-arm64.zip', 'songloft-lynx-bundled-darwin-arm64.dmg',
+      'songloft-lynx-bundled-darwin-x64.zip', 'songloft-lynx-bundled-darwin-x64.dmg',
+    ]
+    : names.includes('songloft-lynx-bundled-android.apk')
+      ? [
+        'songloft-lynx-android.apk', 'songloft-lynx-bundled-android.apk',
+        'songloft-lynx-ios-nosign.ipa', 'songloft-lynx-bundled-ios-nosign.ipa', 'songloft-lynx-harmony.hap',
+        'songloft-lynx-web-standalone.tar.gz', 'songloft-lynx-web-embedded.tar.gz',
+      ]
+      : [
+      'songloft-lynx-android.apk', 'songloft-lynx-ios-nosign.ipa', 'songloft-lynx-harmony.hap',
+      'songloft-lynx-web-standalone.tar.gz', 'songloft-lynx-web-embedded.tar.gz',
+      ]
   const allowed = new Set([...expected, 'version.json', 'checksums.txt', BUNDLE_ASSET, SIGNATURE_ASSET])
   if (readdirSync(directory).some((name) => !allowed.has(name)) ||
       expected.some((name) => !statSync(join(directory, name)).isFile() || statSync(join(directory, name)).size === 0))
-    throw new Error('Release must contain exactly the five platform packages and optional signed update assets')
+    throw new Error('Release must contain exactly the seven platform packages and optional signed update assets')
 
   let record = null
   let signingKey = null
   let bundleUpdate = null
-  if (privateKey.trim()) {
+  if (privateKey.trim() && bundleSource) {
     record = publicKeyRecord(publicKey)
     if (!nativeHost) throw new Error('Missing immutable native host metadata')
     validateBuildMetadata(nativeHost, packageVersion)
@@ -152,7 +167,7 @@ export function finalizeRelease({ directory, packageVersion, contract, bundleSou
   const packageAssets = listReleaseAssets(directory).filter((asset) => expected.includes(asset.name))
   const assets = bundleUpdate ? [...packageAssets, { name: BUNDLE_ASSET, size: bundleUpdate.size, sha256: bundleUpdate.sha256 }]
     .sort((a, b) => a.name.localeCompare(b.name, 'en')) : packageAssets
-  const rawManifest = Buffer.from(JSON.stringify({ ...metadata, assets, bundle_update: bundleUpdate }, null, 2) + '\n')
+  const rawManifest = Buffer.from(JSON.stringify({ ...metadata, ...(bundleOnly ? { client: 'lynx', edition: 'bundled' } : {}), assets, bundle_update: bundleUpdate }, null, 2) + '\n')
   if (rawManifest.length > MAX_MANIFEST_BYTES) throw new Error('Update manifest exceeds the size limit')
   const envelope = signingKey ? {
     protocol: 1, key_id: record.key_id, algorithm: UPDATE_ALGORITHM,

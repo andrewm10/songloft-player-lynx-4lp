@@ -2,6 +2,7 @@ import { useState } from '@lynx-js/react'
 import { useTranslation } from 'react-i18next'
 
 import type { ExcludedDirectory, ScanProgress, ScanValidation } from '../../../models/library-ops.js'
+import { AppCheckbox } from '../../../shared/ui/AppCheckbox.js'
 import { Icon, ICON_COLORS } from '../../../shared/ui/Icon.js'
 import { SettingsSection } from '../../settings/widgets/SettingsSection.js'
 import { SettingsRow } from '../../settings/widgets/SettingsRow.js'
@@ -28,6 +29,8 @@ export interface ScanSectionProps {
   cancelling: boolean
   mode: ScanMode
   onModeChange: (mode: ScanMode) => void
+  resetMetadataOverrides: boolean
+  onResetMetadataOverridesChange: (checked: boolean) => void
   /** Local "I have read this result" flag — see {@link deriveScanView}. */
   dismissed: boolean
   selectedPaths: readonly string[]
@@ -75,6 +78,8 @@ export function ScanSection(props: ScanSectionProps) {
 function IdleState({
   mode,
   onModeChange,
+  resetMetadataOverrides,
+  onResetMetadataOverridesChange,
   selectedPaths,
   onTogglePath,
   onClearPaths,
@@ -102,6 +107,19 @@ function IdleState({
           testId={`scan-mode-${option}`}
         />
       ))}
+
+      {mode === 'reimport'
+        ? (
+          <SettingsRow
+            icon='refresh'
+            title={t('libops.resetMetadataOverrides')}
+            subtitle={t('libops.resetMetadataOverridesDesc')}
+            trailingContent={<AppCheckbox checked={resetMetadataOverrides} />}
+            onTap={() => onResetMetadataOverridesChange(!resetMetadataOverrides)}
+            testId='scan-reset-metadata-overrides'
+          />
+        )
+        : null}
 
       <SettingsRow
         icon='folder'

@@ -14,7 +14,12 @@ import { usePlayerStore } from '../../player/store/index.js'
 // Safe with respect to the note above: the panel is built from plain views, not
 // lynx-ui gesture components.
 import { PlayHistoryPanel } from '../../player/widgets/PlayHistoryPanel.js'
-import { getSongsApi, type SongsFilters } from '../api/index.js'
+import {
+  ALL_MUSIC_TYPE,
+  MUSIC_EXCLUDE_PLAYLIST_LABELS,
+  getSongsApi,
+  type SongsFilters,
+} from '../api/index.js'
 import { flattenSongs } from '../data/pagination.js'
 import { useSongsInfiniteQuery } from '../data/songs-query.js'
 import {
@@ -55,10 +60,15 @@ function normalizeField(field: string | undefined): CategoryField {
 
 /** Build the SongsFilters for the given facet field and value. */
 function buildFiltersForField(field: CategoryField, value: string): SongsFilters {
-  const base: SongsFilters = { sort: 'added_at', order: 'desc' }
+  const base: SongsFilters = {
+    type: ALL_MUSIC_TYPE,
+    excludePlaylistLabels: MUSIC_EXCLUDE_PLAYLIST_LABELS,
+    sort: 'added_at',
+    order: 'desc',
+  }
   switch (field) {
     case 'artist': return { ...base, artist: value }
-    case 'album': return { album: value, sort: 'track', order: 'asc' }
+    case 'album': return { ...base, album: value, sort: 'track', order: 'asc' }
     case 'genre': return { ...base, genre: value }
     case 'year': return { ...base, year: Number(value) || undefined }
     case 'decade': return { ...base, decade: Number(value) || undefined }

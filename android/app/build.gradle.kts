@@ -19,6 +19,7 @@ val packageVersion =
     (JsonSlurper().parse(rootProject.file("../package.json")) as Map<*, *>)["version"].toString()
 val metadataPath = System.getenv("SONGLOFT_BUILD_METADATA")
 val metadata = metadataPath?.let { JsonSlurper().parse(file(it)) as Map<*, *> }
+val bundleBackend = file("libs/songloft.aar")
 
 android {
     namespace = "org.songloft.lynx"
@@ -26,7 +27,8 @@ android {
 
     defaultConfig {
         applicationId = "org.songloft.lynx"
-        minSdk = 21
+        // gomobile's AAR declares API 23. Remote-only development builds keep API 21.
+        minSdk = if (bundleBackend.isFile) 23 else 21
         targetSdk = 34
         versionCode = (metadata?.get("build_number") as Number?)?.toInt() ?: 1
         versionName = metadata?.get("version")?.toString() ?: "dev"
@@ -97,6 +99,7 @@ android {
             // Keep the legacy mode explicit while minSdk remains below 23 so an
             // AGP upgrade cannot silently change the APK's native layout.
             useLegacyPackaging = true
+            keepDebugSymbols += setOf("**/libffmpeg.so", "**/libffprobe.so")
         }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -109,6 +112,10 @@ require(metadata == null || metadata["package_version"] == packageVersion) {
 }
 
 dependencies {
+    // Optional gomobile backend built from the pinned public root SHA by this
+    // repository's release workflow. Without it the native module remains
+    // absent at runtime and the UI correctly hides Bundle mode.
+    if (bundleBackend.isFile) implementation(files(bundleBackend))
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20180813")
     implementation(libs.androidx.core.ktx)

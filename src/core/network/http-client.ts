@@ -7,6 +7,8 @@ import { appConfig } from '../config/app-config.js'
 import { safeClearTimeout } from '../../native/safe-timers.js'
 import { readSystemInfo } from '../../native/native-modules.js'
 import { isWebPlatform } from '../../native/web-platform.js'
+import { desktopCall, desktopConfig } from '../../desktop/client.js'
+import { desktopCookies } from '../../desktop/cef.js'
 
 /** Native HTTP services consume and remove this header before sending. */
 export const REQUEST_TIMEOUT_HEADER = 'X-Songloft-Request-Timeout-Ms'
@@ -33,6 +35,7 @@ export interface TransportRequest {
   body?: string
   /** Fail on redirects where the fetch implementation supports this policy. */
   redirect?: 'error'
+  signal?: AbortSignal
 }
 
 export interface TransportResponse {
@@ -88,6 +91,18 @@ function newAbortController(): { signal?: unknown; abort?: () => void } | null {
  */
 export function createFetchTransport(fetchImpl?: FetchLike): Transport {
   return async (req) => {
+    if (!fetchImpl && desktopConfig()) {
+      const { signal, ...request } = req
+      if (signal?.aborted) throw new Error('Request cancelled')
+      const headers = { ...request.headers }
+      if (!Object.keys(headers).some(key => key.toLowerCase() === 'cookie')) {
+        const cookies = await desktopCookies(req.url).catch(() => ({}))
+        const value = Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join('; ')
+        if (value) headers.Cookie = value
+      }
+      if (signal?.aborted) throw new Error('Request cancelled')
+      return desktopCall<TransportResponse>('network.request', { ...request, headers })
+    }
     // Lynx exposes `fetch` as a BARE global (host-provided HTTP service), NOT as
     // a `globalThis.fetch` property — same shape as `self`. Resolve the bare
     // binding first (guarded by `typeof` so it never throws when truly absent),
@@ -101,6 +116,8 @@ export function createFetchTransport(fetchImpl?: FetchLike): Transport {
       )
     }
     const controller = req.timeoutMs && req.timeoutMs > 0 ? newAbortController() : null
+    if (req.signal?.aborted) throw new Error('Request cancelled')
+    const cancel = () => controller?.abort?.()
     const platform = readSystemInfo()?.['platform']
     const headers = { ...req.headers }
     if (req.timeoutMs && req.timeoutMs > 0 && typeof platform === 'string' && !isWebPlatform()) {
@@ -112,7 +129,7 @@ export function createFetchTransport(fetchImpl?: FetchLike): Transport {
         headers,
         body: req.body,
         ...(req.redirect ? { redirect: req.redirect } : {}),
-        ...(controller?.signal != null ? { signal: controller.signal } : {}),
+        signal: controller?.signal ?? req.signal,
       })
       const responseHeaders: Record<string, string> = {}
       res.headers?.forEach?.((value, key) => {
@@ -135,8 +152,10 @@ export function createFetchTransport(fetchImpl?: FetchLike): Transport {
         }, timeoutMs)
       })
       try {
+        req.signal?.addEventListener('abort', cancel, { once: true })
         return await Promise.race([send(), expiry])
       } finally {
+        req.signal?.removeEventListener('abort', cancel)
         safeClearTimeout(timer as unknown as number)
       }
     }
@@ -194,6 +213,7 @@ export interface RequestOptions {
   receiveTimeoutMs?: number
   /** Reject an obsolete operation before sending or entering auth recovery. */
   assertCurrent?: () => void
+  signal?: AbortSignal
 }
 
 export interface HttpResult<T> {
@@ -282,6 +302,7 @@ export class HttpClient {
         headers: h,
         body: bodyStr,
         timeoutMs: options.receiveTimeoutMs ?? this.receiveTimeoutMs,
+        ...(options.signal ? { signal: options.signal } : {}),
       })
     }
 

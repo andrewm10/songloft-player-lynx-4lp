@@ -8,21 +8,29 @@
 
 | 触发                    | 行为                                                       |
 | ----------------------- | ---------------------------------------------------------- |
-| 代码 push 到 `main`     | 自动验证与四平台打包，成功后更新 `dev` prerelease          |
+| 代码 push 到 `main`     | 自动验证与打包，成功后更新 `dev` prerelease          |
 | push `vX.Y.Z`           | 校验 tag 与 package.json 一致，发布正式版本                |
 | push `vX.Y.Z-beta.N` 等 | 发布带版本号的 prerelease，不成为 latest                   |
 | Actions → Run workflow  | 选择 main 重建 dev，或选择 v\* tag 构建对应版本            |
 | Pull request            | 验证和打包，Android 用 debug 签名/HarmonyOS 不签名，不发布 |
 
-文档/许可证修改不自动触发构建。手动构建其他分支只生成 artifacts。正式和 dev 发布均要求 Android、iOS、HarmonyOS、Web 两种模式全部成功，失败时保留各自 artifacts，不更新 Release。
+文档/许可证修改不自动触发构建。手动构建其他分支只生成 artifacts。正式和 dev 发布要求 Android、iOS、HarmonyOS 和 Web 两种模式全部成功。启用桌面后，还须通过 Windows x64、macOS arm64、macOS x64 三项打包与校验。失败时保留现有 artifacts。
+
+发布 `dev` 前会再次核对 `main` 的最新 SHA。构建期间如果 `main` 有新提交，包括只改文档的提交，旧构建会成功退出、保留现有 `dev`。出现 `A newer main commit is available; skipping this dev release.` 时，在 **Actions → Build and Release → Run workflow** 选择最新 `main`。签名 Secrets 或 Variables 更新后也需要启动新一轮运行。验收时核对 `dev` 的 tag 指向和附件，不能只看工作流通过。
 
 产物名见[安装指南](installation.md)。`version.json` 和 `checksums.txt` 随 Release 发布。新流程移除旧的独立 `dev-harmony` 入口；历史 Release 不自动删除。
 
-dev、preview 和正式 Release 的正文展示 Conventional Commits 分类记录（含提交链接）；`.github/release-notes.md` 仅保留指向 [中文 README](../../README.md#安装与下载) 与 [英文 README](../../README.en.md#installation-and-downloads) 的安装说明链接。五种包的安装/部署方式、服务器连接要求和 SHA-256 校验步骤统一维护在 README。比较范围为当前提交与已合并的最近一个 `v*` tag，跳过指向当前提交的 tag；没有历史版本 tag 时回退到首个提交。仅包含 Flutter 流程同样支持的提交类型；无可列出的变更时只保留安装说明链接。
+本仓库发布标准版、HarmonyOS 和 Web。桌面标准版使用同次构建的业务 bundle。后端仓库另行发布 Android、iOS 和桌面 Bundle，并固定后端、Lynx 子模块与 FFmpeg 资产身份。见[后端发布包名清单](https://github.com/songloft-org/songloft/blob/main/docs/release-packages.md)。
+
+后端的 Lynx Android `LYNX_ANDROID_*` Secrets 使用本仓库 `ANDROID_*` 的值，保持覆盖升级兼容。桌面更新使用同一对 `DESKTOP_UPDATE_*` Secrets。两种发布各自在所在仓库触发，操作见[后端签名与发布说明](https://songloft.hanxi.cc/bundle-mode#发布触发与签名)。
+
+配置 `DESKTOP_SDK_INDEX_URL`、`DESKTOP_SDK_INDEX_SHA256` 和[桌面更新密钥](../../desktop/README.md#ci-与验收)后，桌面安装包和按架构签名的更新清单随 `dev` 或正式 `vX.Y.Z` Release 发布。两个 SDK 变量均未设置时，流水线继续构建移动端和 Web。预发布标签沿用移动和 Web 构建。
+
+dev、preview 和正式 Release 的正文展示 Conventional Commits 分类记录（含提交链接）；`.github/release-notes.md` 仅保留指向 [中文 README](../../README.md#安装与下载) 与 [英文 README](../../README.en.md#installation-and-downloads) 的安装说明链接。各平台包的安装/部署方式、服务器连接要求和 SHA-256 校验步骤统一维护在 README。比较范围为当前提交与已合并的最近一个 `v*` tag，跳过指向当前提交的 tag；没有历史版本 tag 时回退到首个提交。仅包含 Flutter 流程同样支持的提交类型；无可列出的变更时只保留安装说明链接。
 
 版本 tag 的 Release 发布成功后，独立 job 从最新 `main` 更新根目录的中文 `CHANGELOG.md`，将生成器的分类标题和作者标记本地化并提交回仓库。不同版本的日志更新串行执行。dev 不写入该文件，日志提交也不会触发新的构建；按项目要求不另设英文 CHANGELOG。
 
-上传先写 draft，全部资产成功后才公开，避免下载到部分包。dev 替换期间暂时隐藏；上传失败会留 draft 供维护者检查和重跑。正式/preview 的已有 Release（包括 draft）仍拒绝覆盖；先人工确认失败 draft 的状态再决定删除或发布。dev 会清理同一 Release 内的旧资产名称。
+上传先写 draft，全部资产成功后才公开，避免下载到部分包。dev 替换期间暂时隐藏；上传失败会留 draft 供维护者检查和重跑。正式/preview 的已有 Release（包括 draft）仍拒绝覆盖；先人工确认失败 draft 的状态再决定删除或发布。桌面安装包使用固定资产名 `songloft-lynx-{variant}-{target}.{ext}`，dev 替换时清理旧的版本号或哈希命名资产。
 
 ## iOS 原生构建缓存
 
@@ -64,7 +72,7 @@ iOS 只构建设备 Release，明确标为 `nosign`。目前没有 iOS 分发证
 
 bundle 热更新另使用独立 RSA 签名身份，配置 Repository Variable `LYNX_UPDATE_PUBLIC_KEY`（SPKI PEM 公钥）与 Secret `LYNX_UPDATE_PRIVATE_KEY`（PKCS#8 PEM 私钥）。私钥只供 release job 签名，不进入 JS、安装包、artifact 或日志；prepare job 将公钥写入同次构建的不可变壳信息。keyId 由公钥摘要生成，无需另配。详细格式见 [客户端更新协议](../reference/client-updates.md)。
 
-缺少私钥时继续生成五种完整包，不发布未签名热更新资产；私钥存在而公钥缺失/不匹配，或 prepare/release 两阶段公钥变化，发布失败。首次热更新须安装 P2b 接入更新器和受信公钥的新壳；当前 P2a 尚未实现客户端更新入口。轮换公钥也须先安装信任新公钥的壳，不能仅替换远程清单。
+缺少私钥时继续发布完整包。私钥存在而公钥缺失、不匹配，或构建与发布阶段的公钥变化，发布会失败。移动热更新要求安装已内置更新器和受信公钥的原生壳。轮换公钥时先更新原生壳，再发布用新密钥签名的清单。
 
 ## 手动发版脚本
 
@@ -128,10 +136,10 @@ SONGLOFT_BUILD_METADATA="$PWD/.build/version.json" pnpm run build
 
 ## 发布闸门
 
-prepare job 运行类型检查、生产双产物构建、完整 JS 测试与发版工具回归。平台 job 编译宿主，再检查实际包内 bundle、原生版本/构建号、Lynx 动态库、签名与 Web 静态引用。release job 要求五个非空包齐全，生成逐包 SHA-256 和包含包清单的 version.json。
+prepare job 运行类型检查、生产双产物构建、完整 JS 测试与发版工具回归。平台 job 编译宿主，再检查实际包内 bundle、原生版本/构建号、Lynx 动态库、签名与 Web 静态引用。release job 要求七个移动与 Web 非空包齐全，生成逐包 SHA-256 和包含包清单的 version.json；启用 desktop SDK 时另验 standard 与 bundled 两套桌面资产。
 
 配置更新密钥时，release job 同时验证 prepare 阶段壳信息、生产 bundle 和自包含资源约束，发布原生 bundle、`bundle_update` 兼容声明和 `version.json.sig`。签名覆盖原始清单字节，checksum 同时覆盖清单与签名。发布工具回归中的 Java 验签需要 JDK；无 JDK 时该项明确 skip，其余 Node 协议测试仍执行。
 
 正式 JS 构建默认替换掉 devtools/E2E 入口。原生测试桥只能在 Debug 注册/启动，监听 `127.0.0.1:9230`；dev 下载包同样为 Release，不能用于 TestBridge E2E。测试构建方法见[测试指南](testing.md)。
 
-CI 通过证明构建和包检查通过。后台播放、系统权限、DLNA、视频与 HarmonyOS 仍需要对应设备验收。首次切换新工作流后，要核对 Release 的五个包、版本信息、签名身份，并实际安装验证覆盖升级。
+CI 通过证明构建和包检查通过。后台播放、系统权限、DLNA、视频与 HarmonyOS 仍需要对应设备验收。首次切换新工作流后，要核对 Release 的七个移动与 Web 包、桌面两套 variant、版本信息、签名身份，并实际安装验证覆盖升级。
