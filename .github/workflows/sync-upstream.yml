@@ -130,16 +130,29 @@ jobs:
 
       # 合并策略同 Flutter 旧版：冲突一律取上游（-X theirs），再把补丁重新打回去。
       # 这样上游对 Manifest / package.json 的改动自动并入，而我方补丁随后 re-apply 覆盖。
+      #
+      # ★ 关键：merge 会把上游对 .github/workflows/ 的改动也带进来，但 GITHUB_TOKEN 是
+      #   GitHub App，无权创建/更新 workflow 文件（无 workflows 权限），push 会被拒。
+      #   因此 merge 后必须把 .github/ 与 patch/ 整体还原为 fork 版本：
+      #   - workflow 保持 fork 现状，push 时对 .github/workflows/ 零改动 → 权限红线不触发；
+      #   - 其余源码/配置正常同步上游，补丁由下一步 --apply-source 重新打回源码树。
       - name: "Merge upstream main (conflict: prefer upstream)"
         if: steps.version_gate.outputs.skip != '1'
         run: |
           set -euo pipefail
+          # 记录 merge 前的 fork HEAD，作为 .github/patch 的还原基准。
+          FORK_HEAD=$(git rev-parse HEAD)
           if ! git merge -X theirs --no-edit upstream/main; then
             echo "::error::合并上游出现无法自动解决的冲突（非内容级），已回滚。"
             git merge --abort 2>/dev/null || true
             exit 1
           fi
-          echo "=== 已合并上游 main（冲突取上游，补丁随后 re-apply）==="
+          # 把 .github/ 与 patch/ 恢复成 fork 自己的版本：
+          # 先从 index + 工作区彻底移除（含上游新增的文件），再从 FORK_HEAD 检出。
+          git rm -r -f --cached .github patch
+          rm -rf .github patch
+          git checkout "$FORK_HEAD" -- .github patch
+          echo "=== 已合并上游 main（冲突取上游）；.github/ 与 patch/ 已还原为 fork 版本 ==="
 
       # ★ 关键：只 re-apply 源码树，绝不改 .github/workflows/ 下的文件。
       # 构建工作流保持上游原样；CI checkout tag 时源码树已含方控补丁，直接编译。
